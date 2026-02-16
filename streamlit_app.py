@@ -6,7 +6,7 @@ import datetime
 # --- App Configuration ---
 st.set_page_config(page_title="Keros Photogrammetry Register", page_icon="📸", layout="wide")
 
-st.title("📸 Keros Photogrammetry Register")
+st.title("Keros Photogrammetry Register")
 st.markdown("---")
 
 # --- Google Sheets Connection ---
@@ -35,7 +35,7 @@ for col in expected_cols:
         df[col] = False if "Complete" in col or "uploaded" in col or "Cropped" in col else ""
 
 # --- SECTION 1: ADD NEW LAYER ---
-st.header("1. Register New Layer")
+st.header("Register New Layer")
 with st.form("entry_form", clear_on_submit=True):
     col1, col2, col3, col4, col5 = st.columns(5)
     
@@ -76,13 +76,13 @@ with st.form("entry_form", clear_on_submit=True):
 st.markdown("---")
 
 # --- SECTION 2: LIVE REGISTER ---
-st.header("2. Processing Status & Master Register")
+st.header("Processing Status & Master Register")
 
-# --- Data Preparation & Filtering ---
+# --- Data Preparation ---
 df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
 df['Year'] = df['Date'].dt.year.fillna("Unknown").astype(str)
 
-# Search & Filter UI (Shared across all tabs)
+# --- Top-Level Global Filters ---
 c1, c2, c3 = st.columns([1, 1, 2])
 with c1:
     unique_years = ["All"] + sorted(df['Year'].unique().tolist(), reverse=True)
@@ -94,39 +94,50 @@ with c2:
 with c3:
     search_query = st.text_input("🔍 Search by Layer Name/Notes", "")
 
-# --- Filter Data Logic ---
+# Apply Global Filters first
 filtered_df = df.copy()
 if selected_year != "All":
     filtered_df = filtered_df[filtered_df['Year'] == selected_year]
 if selected_initials != "All":
     filtered_df = filtered_df[filtered_df['Initials'] == selected_initials]
 if search_query:
-    filtered_df = filtered_df[filtered_df['Name'].str.contains(search_query, case=False, na=False) | 
-                               filtered_df['Notes'].str.contains(search_query, case=False, na=False)]
+    filtered_df = filtered_df[
+        filtered_df['Name'].str.contains(search_query, case=False, na=False) | 
+        filtered_df['Notes'].str.contains(search_query, case=False, na=False)
+    ]
 
-# Create Area Tabs
+# --- Area Tabs ---
 areas = ["All Areas"] + sorted(df['Area'].unique().tolist())
 tabs = st.tabs(areas)
 
+# We store the edited results here
+all_edits = []
+
 for i, area in enumerate(areas):
     with tabs[i]:
-        # Filter for this specific tab's area
+        # 1. Sub-filter for Area
         if area == "All Areas":
-            tab_df = filtered_df.copy()
+            area_df = filtered_df.copy()
         else:
-            tab_df = filtered_df[filtered_df['Area'] == area].copy()
+            area_df = filtered_df[filtered_df['Area'] == area].copy()
         
-        # UI Polish: Use an emoji prefix for the "Complete" column to "shade" it
-        tab_df['Status'] = tab_df['Complete'].apply(lambda x: "✅ Done" if x else "⏳ Pending")
+        # 2. THE TRENCH QUERY (Specific to this Area)
+        area_df['Trench'] = area_df['Trench'].astype(str)
+        trench_list = ["All Trenches"] + sorted(area_df['Trench'].unique().tolist())
+        selected_trench = st.selectbox(f"Select Trench in {area}:", trench_list, key=f"trench_sel_{area}")
         
-        st.info(f"✏️ Editing {area} Register. Click 'Save' at the bottom after changes.")
+        if selected_trench != "All Trenches":
+            area_df = area_df[area_df['Trench'] == selected_trench]
+
+        # 3. Add the visual Status emoji
+        area_df['Model Status'] = area_df['Complete'].apply(lambda x: "✅ Done" if x else "⏳ Pending")
         
-        # The Editor
-        edited_tab_df = st.data_editor(
-            tab_df.drop(columns=['Year']), # Hide the helper column
+        # 4. The Editor
+        edited_tab = st.data_editor(
+            area_df.drop(columns=['Year']),
             column_config={
                 "Date": st.column_config.DatetimeColumn("Date", format="DD.MM.YYYY"),
-                "Status": st.column_config.TextColumn("Current Status", disabled=True), # Visual indicator
+                "Model Status": st.column_config.TextColumn("Model Status", disabled=True),
                 "Complete": st.column_config.CheckboxColumn("Processed?"),
                 "Notes": st.column_config.TextColumn("Notes", width="large"),
                 "Device": st.column_config.SelectboxColumn("Device", options=["iPad 1", "iPad 2", "iPad 3", "iPhone 1", "Other"]),
@@ -135,81 +146,96 @@ for i, area in enumerate(areas):
             width="stretch",
             height=500,
             hide_index=True,
-            key=f"editor_{area}" # Unique key per tab
+            key=f"editor_{area}"
         )
+        all_edits.append(edited_tab)
 
-# --- SAVE BUTTON (Outside the loop so it's always at the bottom) ---
-if st.button("💾 Save All Changes to Master Sheet"):
-    # Note: Logic here needs to handle that we've edited a subset of data
-    # The safest way is to update the master 'df' with our 'edited_tab_df'
-    # but since we have multiple tabs, we rely on the user editing the active tab.
+# --- Save Button ---
+st.markdown("---")
+if st.button("💾 Save All Changes"):
+    # Create a fresh copy of master df
+    final_df = df.copy()
     
-    # In this multi-tab setup, we sync the specific edited data back to the master
-    df.update(edited_tab_df)
+    # Update the master dataframe with changes from the editors
+    for edited_data in all_edits:
+        if edited_data is not None:
+            # We match by the index to ensure the right rows are updated
+            final_df.update(edited_data)
     
-    # Format back to string for GSheets
-    df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%d.%m.%Y')
+    # Final cleanup: Convert date back to string for GSheets
+    final_df['Date'] = pd.to_datetime(final_df['Date']).dt.strftime('%d.%m.%Y')
     
-    conn.update(spreadsheet=URL, data=df)
-    st.success("Master Register synced to Google Sheets!")
+    conn.update(spreadsheet=URL, data=final_df)
+    st.balloons()
+    st.success("Google Sheet successfully updated!")
     st.rerun()
 
 st.markdown("---")
 
 # --- SECTION 3: STATISTICS ---
+# --- SECTION 3: STATISTICS ---
 st.header("3. Project Statistics")
 
 if not df.empty:
-    # Top Row: Main Metrics
-    c1, c2, c3, c4 = st.columns(4)
+    stats_df = df.copy()
+    stats_df['Date_Text'] = stats_df['Date'].astype(str)
     
+    # 1. Create a Sorting Label: "Area | Trench"
+    # This ensures the X-axis follows Area order first
+    stats_df['Area_Trench'] = stats_df['Area'] + " | " + stats_df['Trench'].astype(str)
+
+    # KPIs
+    c1, c2, c3, c4 = st.columns(4)
     total_count = len(df)
     processed_count = df["Complete"].astype(bool).sum()
     gis_count = df["GIS uploaded"].astype(bool).sum()
     progress = (processed_count / total_count * 100) if total_count > 0 else 0
 
-    c1.metric("Total Models Registered", total_count)
-    c2.metric("Total Photogram Processed", processed_count)
-    c3.metric("Total in GIS", gis_count)
-    c4.metric("Overall Progress", f"{progress:.1f}%")
+    c1.metric("Total Models", total_count)
+    c2.metric("Processed", processed_count)
+    c3.metric("In GIS", gis_count)
+    c4.metric("Progress", f"{progress:.1f}%")
 
     st.markdown("---")
+
+    # ROW 1: YEARLY TRENCH BREAKDOWN
+    row1_col1, row1_col2 = st.columns(2)
     
-   # --- Bottom Row: Charts ---
-    st.markdown("---")
-    
-    # 1. Models per Trench & Area (Grouped Chart)
-    st.write("#### 🗺️ Models per Trench (Colored by Area)")
-    if not df.empty:
-        # Group by both Trench and Area to get the counts
-        trench_area_counts = df.groupby(['Trench', 'Area']).size().reset_index(name='count')
-        
-        # This creates a grouped bar chart
-        st.bar_chart(
-            trench_area_counts, 
-            x="Trench", 
-            y="count", 
-            color="Area", # This separates the bars by Area color!
-            width="stretch"
-        )
-
-    col_stats1, col_stats2 = st.columns(2)
-
-    with col_stats1:
-        st.write("#### 📍 Total Models by Area")
-        area_counts = df['Area'].value_counts().reset_index(name='Total')
-        # A simple bar chart for Area totals
-        st.bar_chart(area_counts, x="Area", y="Total", color="#29b5e8")
-
-    with col_stats2:
-        st.write("#### 👤 Processing Output by Staff")
-        processed_df = df[df["Complete"] == True].copy()
-        if not processed_df.empty:
-            staff_output = processed_df['Initials'].value_counts().reset_index()
-            staff_output.columns = ['Initials', 'Completed Layers']
-            st.bar_chart(staff_output, x="Initials", y="Completed Layers", color="#FF4B4B")
+    with row1_col1:
+        st.write("#### 📅 2025: Models per Trench (Sorted by Area)")
+        df_2025 = stats_df[stats_df['Date_Text'].str.contains("2025", na=False)]
+        if not df_2025.empty:
+            # Group by our new label to keep bars separate but sorted
+            t_2025 = df_2025.groupby(['Area_Trench', 'Area']).size().reset_index(name='Count')
+            t_2025 = t_2025.sort_values(['Area', 'Area_Trench'])
+            st.bar_chart(t_2025, x="Area_Trench", y="Count", color="Area")
         else:
-            st.info("No layers marked as 'Complete' yet.")
+            st.info("No 2025 data.")
+
+    with row1_col2:
+        st.write("#### 📅 2026: Models per Trench (Sorted by Area)")
+        df_2026 = stats_df[stats_df['Date_Text'].str.contains("2026", na=False)]
+        if not df_2026.empty:
+            t_2026 = df_2026.groupby(['Area_Trench', 'Area']).size().reset_index(name='Count')
+            t_2026 = t_2026.sort_values(['Area', 'Area_Trench'])
+            st.bar_chart(t_2026, x="Area_Trench", y="Count", color="Area")
+        else:
+            st.info("No 2026 data.")
+
+    st.markdown("---")
+
+    # ROW 2: STAFF & AREA TOTALS
+    row2_col1, row2_col2 = st.columns(2)
+
+    with row2_col1:
+        st.write("#### 👤 Total Layers by Initial")
+        staff_counts = stats_df.groupby('Initials').size().reset_index(name='Total')
+        st.bar_chart(staff_counts, x="Initials", y="Total", color="#FF4B4B")
+
+    with row2_col2:
+        st.write("#### 🗺️ Total Layers by Area")
+        area_total = stats_df.groupby('Area').size().reset_index(name='Total')
+        st.bar_chart(area_total, x="Area", y="Total", color="Area")
 
 else:
-    st.write("No data available yet to show statistics.")
+    st.info("No data available for statistics.")
