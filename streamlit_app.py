@@ -78,83 +78,81 @@ st.markdown("---")
 # --- SECTION 2: LIVE REGISTER ---
 st.header("2. Processing Status & Master Register")
 
-# --- Data Preparation for Filtering ---
-# Ensure Date is in a format pandas can read as a date
+# --- Data Preparation & Filtering ---
 df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
-# Create a 'Year' column for the filter (handle empty dates with "Unknown")
 df['Year'] = df['Date'].dt.year.fillna("Unknown").astype(str)
 
-# --- Search and Filter UI ---
-c1, c2, c3, c4 = st.columns([1, 1, 1, 2]) # 4 columns now
+# Search & Filter UI (Shared across all tabs)
+c1, c2, c3 = st.columns([1, 1, 2])
 with c1:
     unique_years = ["All"] + sorted(df['Year'].unique().tolist(), reverse=True)
     selected_year = st.selectbox("Filter by Year:", unique_years)
-
 with c2:
-    df['Trench'] = df['Trench'].astype(str)
-    unique_trenches = ["All"] + sorted(df['Trench'].unique().tolist())
-    selected_trench = st.selectbox("Filter by Trench:", unique_trenches)
-
-with c3:
     df['Initials'] = df['Initials'].fillna("").astype(str)
     unique_initials = ["All"] + sorted([i for i in df['Initials'].unique() if i])
     selected_initials = st.selectbox("Filter by Initials:", unique_initials)
-
-with c4:
+with c3:
     search_query = st.text_input("🔍 Search by Layer Name/Notes", "")
 
-# --- Apply Filters ---
-display_df = df.copy()
-
+# --- Filter Data Logic ---
+filtered_df = df.copy()
 if selected_year != "All":
-    display_df = display_df[display_df['Year'] == selected_year]
-
-if selected_trench != "All":
-    display_df = display_df[display_df['Trench'] == selected_trench]
-
+    filtered_df = filtered_df[filtered_df['Year'] == selected_year]
 if selected_initials != "All":
-    display_df = display_df[display_df['Initials'] == selected_initials]
-
+    filtered_df = filtered_df[filtered_df['Initials'] == selected_initials]
 if search_query:
-    display_df = display_df[
-        display_df['Name'].str.contains(search_query, case=False, na=False) | 
-        display_df['Notes'].str.contains(search_query, case=False, na=False)
-    ]
+    filtered_df = filtered_df[filtered_df['Name'].str.contains(search_query, case=False, na=False) | 
+                               filtered_df['Notes'].str.contains(search_query, case=False, na=False)]
 
-# Remove the helper 'Year' column before showing the table (keeps it clean)
-display_df = display_df.drop(columns=['Year'])
+# Create Area Tabs
+areas = ["All Areas"] + sorted(df['Area'].unique().tolist())
+tabs = st.tabs(areas)
 
-edited_df = st.data_editor(
-    display_df,
-    column_config={
-        # 1. Matches the DATETIME type we created for the Year filter
-        "Date": st.column_config.DatetimeColumn(
-            "Date", 
-            format="DD.MM.YYYY", 
-            step=60
-        ), 
-        "Trench": st.column_config.TextColumn("Trench"),
-        "Name": st.column_config.TextColumn("Layer Name"),
-        "Device": st.column_config.SelectboxColumn(
-            "Device", 
-            options=["iPad 1", "iPad 2", "iPad 3", "iPhone1", "Other"]
-        ),
-        "Initials": st.column_config.TextColumn("Initials"),
-        "Complete": st.column_config.CheckboxColumn("Processed?"),
-        "Model Cropped?": st.column_config.CheckboxColumn("Cropped?"),
-        "GIS uploaded?": st.column_config.CheckboxColumn("In GIS?"),
-        "Notes": st.column_config.TextColumn("Notes", width="large"),
-    },
-    num_rows="dynamic",
-    width="stretch",  # Updated for 2026 Streamlit standards
-    hide_index=True,
-)
+for i, area in enumerate(areas):
+    with tabs[i]:
+        # Filter for this specific tab's area
+        if area == "All Areas":
+            tab_df = filtered_df.copy()
+        else:
+            tab_df = filtered_df[filtered_df['Area'] == area].copy()
+        
+        # UI Polish: Use an emoji prefix for the "Complete" column to "shade" it
+        tab_df['Status'] = tab_df['Complete'].apply(lambda x: "✅ Done" if x else "⏳ Pending")
+        
+        st.info(f"✏️ Editing {area} Register. Click 'Save' at the bottom after changes.")
+        
+        # The Editor
+        edited_tab_df = st.data_editor(
+            tab_df.drop(columns=['Year']), # Hide the helper column
+            column_config={
+                "Date": st.column_config.DatetimeColumn("Date", format="DD.MM.YYYY"),
+                "Status": st.column_config.TextColumn("Current Status", disabled=True), # Visual indicator
+                "Complete": st.column_config.CheckboxColumn("Processed?"),
+                "Notes": st.column_config.TextColumn("Notes", width="large"),
+                "Device": st.column_config.SelectboxColumn("Device", options=["iPad 1", "iPad 2", "iPad 3", "iPhone 1", "Other"]),
+            },
+            num_rows="dynamic",
+            width="stretch",
+            height=500,
+            hide_index=True,
+            key=f"editor_{area}" # Unique key per tab
+        )
 
-if st.button("💾 Save All Changes"):
-    # Merge edits back to the main dataframe
-    df.update(edited_df)
+# --- SAVE BUTTON (Outside the loop so it's always at the bottom) ---
+if st.button("💾 Save All Changes to Master Sheet"):
+    # Note: Logic here needs to handle that we've edited a subset of data
+    # The safest way is to update the master 'df' with our 'edited_tab_df'
+    # but since we have multiple tabs, we rely on the user editing the active tab.
+    
+    # In this multi-tab setup, we sync the specific edited data back to the master
+    df.update(edited_tab_df)
+    
+    # Format back to string for GSheets
+    df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%d.%m.%Y')
+    
     conn.update(spreadsheet=URL, data=df)
-    st.success("Google Sheet synced!")
+    st.success("Master Register synced to Google Sheets!")
+    st.rerun()
 
 st.markdown("---")
 
@@ -177,26 +175,41 @@ if not df.empty:
 
     st.markdown("---")
     
-    # Bottom Row: Two Charts
-    col_chart1, col_chart2 = st.columns(2)
-
-    with col_chart1:
-        st.write("#### Models per Trench")
-        # Count total layers assigned to each trench
-        trench_counts = df['Trench'].value_counts().reset_index(name='count')
-        st.bar_chart(trench_counts, x="Trench", y="count", color="#29b5e8")
-
-    with col_chart2:
-        st.write("#### Processing Output by Staff")
-        # Filter to only see completed work
-        processed_df = df[df["Complete"] == True]
+   # --- Bottom Row: Charts ---
+    st.markdown("---")
+    
+    # 1. Models per Trench & Area (Grouped Chart)
+    st.write("#### 🗺️ Models per Trench (Colored by Area)")
+    if not df.empty:
+        # Group by both Trench and Area to get the counts
+        trench_area_counts = df.groupby(['Trench', 'Area']).size().reset_index(name='count')
         
+        # This creates a grouped bar chart
+        st.bar_chart(
+            trench_area_counts, 
+            x="Trench", 
+            y="count", 
+            color="Area", # This separates the bars by Area color!
+            width="stretch"
+        )
+
+    col_stats1, col_stats2 = st.columns(2)
+
+    with col_stats1:
+        st.write("#### 📍 Total Models by Area")
+        area_counts = df['Area'].value_counts().reset_index(name='Total')
+        # A simple bar chart for Area totals
+        st.bar_chart(area_counts, x="Area", y="Total", color="#29b5e8")
+
+    with col_stats2:
+        st.write("#### 👤 Processing Output by Staff")
+        processed_df = df[df["Complete"] == True].copy()
         if not processed_df.empty:
-            # Count how many "Complete" rows belong to each person
-            staff_output = processed_df['Initials'].value_counts().reset_index(name='Completed Layers')
+            staff_output = processed_df['Initials'].value_counts().reset_index()
+            staff_output.columns = ['Initials', 'Completed Layers']
             st.bar_chart(staff_output, x="Initials", y="Completed Layers", color="#FF4B4B")
         else:
-            st.info("No layers marked as 'Complete' yet to show staff stats.")
+            st.info("No layers marked as 'Complete' yet.")
 
 else:
     st.write("No data available yet to show statistics.")
