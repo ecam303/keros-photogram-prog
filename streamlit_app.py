@@ -1,172 +1,181 @@
-import datetime
-import random
-
-import altair as alt
-import numpy as np
-import pandas as pd
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
+import pandas as pd
+import datetime
 
-# Show app title and description.
-st.set_page_config(page_title="Support tickets", page_icon="🎫")
-st.title("🎫 Support tickets")
-st.write(
-    """
-    This app shows how you can build an internal tool in Streamlit. Here, we are 
-    implementing a support ticket workflow. The user can create a ticket, edit 
-    existing tickets, and view some statistics.
-    """
-)
+# --- App Configuration ---
+st.set_page_config(page_title="Keros Photogrammetry Register", page_icon="📸", layout="wide")
 
-# Create a random Pandas dataframe with existing tickets.
-if "df" not in st.session_state:
+st.title("📸 Keros Photogrammetry Register")
+st.markdown("---")
 
-    # Set seed for reproducibility.
-    np.random.seed(42)
+# --- Google Sheets Connection ---
+conn = st.connection("gsheets", type=GSheetsConnection)
+URL = st.secrets["connections"]["gsheets"]["spreadsheet"]
 
-    # Make up some fake issue descriptions.
-    issue_descriptions = [
-        "Network connectivity issues in the office",
-        "Software application crashing on startup",
-        "Printer not responding to print commands",
-        "Email server downtime",
-        "Data backup failure",
-        "Login authentication problems",
-        "Website performance degradation",
-        "Security vulnerability identified",
-        "Hardware malfunction in the server room",
-        "Employee unable to access shared files",
-        "Database connection failure",
-        "Mobile application not syncing data",
-        "VoIP phone system issues",
-        "VPN connection problems for remote employees",
-        "System updates causing compatibility issues",
-        "File server running out of storage space",
-        "Intrusion detection system alerts",
-        "Inventory management system errors",
-        "Customer data not loading in CRM",
-        "Collaboration tool not sending notifications",
+# Load data - ttl=0 ensures we don't see "stale" data after an update
+df = conn.read(spreadsheet=URL, ttl=0)
+# 1. Convert specific columns to Boolean (True/False)
+# This prevents the "FLOAT" compatibility error
+checkbox_cols = ["Complete", "Model Cropped", "GIS uploaded"]
+for col in checkbox_cols:
+    # We convert to bool, and fill empty cells with False
+    df[col] = df[col].fillna(False).astype(bool)
+
+# 2. Ensure Trench and Name are treated as text
+df['Trench'] = df['Trench'].astype(str)
+df['Area'] = df['Area'].astype(str)
+df['Name'] = df['Name'].astype(str)
+df['PSX File'] = df['PSX File'].astype(str)
+
+# Ensure all necessary columns exist
+expected_cols = ["Date", "Trench", "Area", "Name", "Device", "Complete", "Model Cropped", "GIS uploaded", "Notes"]
+for col in expected_cols:
+    if col not in df.columns:
+        df[col] = False if "Complete" in col or "uploaded" in col or "Cropped" in col else ""
+
+# --- SECTION 1: ADD NEW LAYER ---
+st.header("1. Register New Layer")
+with st.form("entry_form", clear_on_submit=True):
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        date = st.date_input("Date", datetime.date.today())
+    with col2:
+        area = st.selectbox("Area", ["Dhaskalio", "Kavos", "Polygon2", "SDS", "Konakia"])
+    with col3:
+        trench = st.text_input("Trench")
+    with col4:
+        layer_name = st.text_input("Layer Name (e.g. 1b2a)")
+    with col5:
+        device = st.selectbox("Device Taken", ["iPad 1", "iPad 2", "iPad 3", "iPhone1", "iPhone 2"])
+    
+    notes = st.text_area("Initial Field Notes")
+    submit = st.form_submit_button("Add Layer to Register")
+
+    if submit:
+        if trench and layer_name:
+            new_row = pd.DataFrame([{
+                "Date": date.strftime("%d.%m.%Y"),
+                "Area": str(area),
+                "Trench": str(trench),
+                "Name": layer_name,
+                "Device": device,
+                "Complete": False,
+                "Model Cropped": False,
+                "GIS uploaded": False,
+                "Notes": notes
+            }])
+            updated_df = pd.concat([df, new_row], ignore_index=True)
+            conn.update(spreadsheet=URL, data=updated_df)
+            st.success(f"Added {layer_name} to the register!")
+            st.rerun()
+        else:
+            st.error("Please provide both a Trench ID and a Layer Name.")
+
+st.markdown("---")
+
+# --- SECTION 2: LIVE REGISTER ---
+st.header("2. Processing Status & Master Register")
+
+# Search and Filter logic
+# Search and Filter logic
+c1, c2, c3 = st.columns([1, 1, 2]) # Split into 3 columns
+with c1:
+    df['Trench'] = df['Trench'].astype(str)
+    unique_trenches = ["All"] + sorted(df['Trench'].unique().tolist())
+    selected_trench = st.selectbox("Filter by Trench:", unique_trenches)
+
+with c2:
+    # Handle Initials - filtering out empty values
+    df['Initials'] = df['Initials'].fillna("").astype(str)
+    unique_initials = ["All"] + sorted([i for i in df['Initials'].unique() if i])
+    selected_initials = st.selectbox("Filter by Initials:", unique_initials)
+
+with c3:
+    search_query = st.text_input("🔍 Search by Layer Name", "")
+
+# Apply Filters
+display_df = df.copy()
+
+if selected_trench != "All":
+    display_df = display_df[display_df['Trench'] == selected_trench]
+
+if selected_initials != "All":
+    display_df = display_df[display_df['Initials'] == selected_initials]
+
+if search_query:
+    # This searches both the Name AND the Notes for the query
+    display_df = display_df[
+        display_df['Name'].str.contains(search_query, case=False, na=False) | 
+        display_df['Notes'].str.contains(search_query, case=False, na=False)
     ]
 
-    # Generate the dataframe with 100 rows/tickets.
-    data = {
-        "ID": [f"TICKET-{i}" for i in range(1100, 1000, -1)],
-        "Issue": np.random.choice(issue_descriptions, size=100),
-        "Status": np.random.choice(["Open", "In Progress", "Closed"], size=100),
-        "Priority": np.random.choice(["High", "Medium", "Low"], size=100),
-        "Date Submitted": [
-            datetime.date(2023, 6, 1) + datetime.timedelta(days=random.randint(0, 182))
-            for _ in range(100)
-        ],
-    }
-    df = pd.DataFrame(data)
-
-    # Save the dataframe in session state (a dictionary-like object that persists across
-    # page runs). This ensures our data is persisted when the app updates.
-    st.session_state.df = df
-
-
-# Show a section to add a new ticket.
-st.header("Add a ticket")
-
-# We're adding tickets via an `st.form` and some input widgets. If widgets are used
-# in a form, the app will only rerun once the submit button is pressed.
-with st.form("add_ticket_form"):
-    issue = st.text_area("Describe the issue")
-    priority = st.selectbox("Priority", ["High", "Medium", "Low"])
-    submitted = st.form_submit_button("Submit")
-
-if submitted:
-    # Make a dataframe for the new ticket and append it to the dataframe in session
-    # state.
-    recent_ticket_number = int(max(st.session_state.df.ID).split("-")[1])
-    today = datetime.datetime.now().strftime("%m-%d-%Y")
-    df_new = pd.DataFrame(
-        [
-            {
-                "ID": f"TICKET-{recent_ticket_number+1}",
-                "Issue": issue,
-                "Status": "Open",
-                "Priority": priority,
-                "Date Submitted": today,
-            }
-        ]
-    )
-
-    # Show a little success message.
-    st.write("Ticket submitted! Here are the ticket details:")
-    st.dataframe(df_new, use_container_width=True, hide_index=True)
-    st.session_state.df = pd.concat([df_new, st.session_state.df], axis=0)
-
-# Show section to view and edit existing tickets in a table.
-st.header("Existing tickets")
-st.write(f"Number of tickets: `{len(st.session_state.df)}`")
-
-st.info(
-    "You can edit the tickets by double clicking on a cell. Note how the plots below "
-    "update automatically! You can also sort the table by clicking on the column headers.",
-    icon="✍️",
-)
-
-# Show the tickets dataframe with `st.data_editor`. This lets the user edit the table
-# cells. The edited data is returned as a new dataframe.
 edited_df = st.data_editor(
-    st.session_state.df,
+    display_df,
+    column_config={
+        "Date": st.column_config.TextColumn("Date", disabled=True),
+        "Area": st.column_config.TextColumn("Area", disabled=True),
+        "Trench": st.column_config.TextColumn("Trench", disabled=True),
+        "Name": st.column_config.TextColumn("Layer Name", disabled=True),
+        "Device": st.column_config.TextColumn("Device", disabled=True),
+        "Complete": st.column_config.CheckboxColumn("Processed?"),
+        "Model Cropped": st.column_config.CheckboxColumn("Cropped"),
+        "GIS uploaded": st.column_config.CheckboxColumn("In GIS"),
+        "Notes": st.column_config.TextColumn("Notes", width="large"),
+        "Initials": st.column_config.TextColumn("Initials", width="small"),
+    },
     use_container_width=True,
     hide_index=True,
-    column_config={
-        "Status": st.column_config.SelectboxColumn(
-            "Status",
-            help="Ticket status",
-            options=["Open", "In Progress", "Closed"],
-            required=True,
-        ),
-        "Priority": st.column_config.SelectboxColumn(
-            "Priority",
-            help="Priority",
-            options=["High", "Medium", "Low"],
-            required=True,
-        ),
-    },
-    # Disable editing the ID and Date Submitted columns.
-    disabled=["ID", "Date Submitted"],
 )
 
-# Show some metrics and charts about the ticket.
-st.header("Statistics")
+if st.button("💾 Save All Changes"):
+    # Merge edits back to the main dataframe
+    df.update(edited_df)
+    conn.update(spreadsheet=URL, data=df)
+    st.success("Google Sheet synced!")
 
-# Show metrics side by side using `st.columns` and `st.metric`.
-col1, col2, col3 = st.columns(3)
-num_open_tickets = len(st.session_state.df[st.session_state.df.Status == "Open"])
-col1.metric(label="Number of open tickets", value=num_open_tickets, delta=10)
-col2.metric(label="First response time (hours)", value=5.2, delta=-1.5)
-col3.metric(label="Average resolution time (hours)", value=16, delta=2)
+st.markdown("---")
 
-# Show two Altair charts using `st.altair_chart`.
-st.write("")
-st.write("##### Ticket status per month")
-status_plot = (
-    alt.Chart(edited_df)
-    .mark_bar()
-    .encode(
-        x="month(Date Submitted):O",
-        y="count():Q",
-        xOffset="Status:N",
-        color="Status:N",
-    )
-    .configure_legend(
-        orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-    )
-)
-st.altair_chart(status_plot, use_container_width=True, theme="streamlit")
+# --- SECTION 3: STATISTICS ---
+st.header("3. Project Statistics")
 
-st.write("##### Current ticket priorities")
-priority_plot = (
-    alt.Chart(edited_df)
-    .mark_arc()
-    .encode(theta="count():Q", color="Priority:N")
-    .properties(height=300)
-    .configure_legend(
-        orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-    )
-)
-st.altair_chart(priority_plot, use_container_width=True, theme="streamlit")
+if not df.empty:
+    # Top Row: Main Metrics
+    c1, c2, c3, c4 = st.columns(4)
+    
+    total_count = len(df)
+    processed_count = df["Complete"].astype(bool).sum()
+    gis_count = df["GIS uploaded"].astype(bool).sum()
+    progress = (processed_count / total_count * 100) if total_count > 0 else 0
+
+    c1.metric("Total Layers Registered", total_count)
+    c2.metric("Total Processed", processed_count)
+    c3.metric("Total in GIS", gis_count)
+    c4.metric("Overall Progress", f"{progress:.1f}%")
+
+    st.markdown("---")
+    
+    # Bottom Row: Two Charts
+    col_chart1, col_chart2 = st.columns(2)
+
+    with col_chart1:
+        st.write("#### Layers per Trench")
+        # Count total layers assigned to each trench
+        trench_counts = df['Trench'].value_counts().reset_index(name='count')
+        st.bar_chart(trench_counts, x="Trench", y="count", color="#29b5e8")
+
+    with col_chart2:
+        st.write("#### Processing Output by Staff")
+        # Filter to only see completed work
+        processed_df = df[df["Complete"] == True]
+        
+        if not processed_df.empty:
+            # Count how many "Complete" rows belong to each person
+            staff_output = processed_df['Initials'].value_counts().reset_index(name='Completed Layers')
+            st.bar_chart(staff_output, x="Initials", y="Completed Layers", color="#FF4B4B")
+        else:
+            st.info("No layers marked as 'Complete' yet to show staff stats.")
+
+else:
+    st.write("No data available yet to show statistics.")
