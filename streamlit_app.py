@@ -160,7 +160,7 @@ if not df.empty:
     col_chart1, col_chart2 = st.columns(2)
 
     with col_chart1:
-        st.write("#### Layers per Trench")
+        st.write("#### Models per Trench")
         # Count total layers assigned to each trench
         trench_counts = df['Trench'].value_counts().reset_index(name='count')
         st.bar_chart(trench_counts, x="Trench", y="count", color="#29b5e8")
