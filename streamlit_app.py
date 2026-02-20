@@ -126,13 +126,47 @@ elif app_mode == "🔄 Processing Status (2026)":
             if sel_t != "All":
                 view_df = view_df[view_df['Trench'] == sel_t]
             
-            edited = st.data_editor(view_df, key=f"ed_{a_name}", hide_index=True, use_container_width=True, height=600)
+            # Use dynamic rows to allow adding/deleting directly in the table
+            edited = st.data_editor(
+                view_df, 
+                key=f"ed_{a_name}", 
+                hide_index=True, 
+                use_container_width=True, 
+                height=600,
+                num_rows="dynamic"  # <--- This enables the '+' button at the bottom of the table
+            )
             all_edits.append(edited)
 
     if st.button("💾 Save Changes"):
+        # We start with the original dataframe
         final_df = df.copy()
-        for ed in all_edits: 
-            if ed is not None: final_df.update(ed)
+        
+        # We loop through all the edits made in any tab
+        for ed in all_edits:
+            if ed is not None:
+                # 'edited_rows' handles updates to existing data
+                if "edited_rows" in ed:
+                    for index, updates in ed["edited_rows"].items():
+                        # We apply changes to the correct row in the original dataframe
+                        actual_index = view_df.index[index]
+                        for col, val in updates.items():
+                            final_df.at[actual_index, col] = val
+                
+                # 'added_rows' handles the brand new rows from the '+' button
+                if "added_rows" in ed:
+                    for row in ed["added_rows"]:
+                        # If a row was added in a specific tab, we pre-fill the Area
+                        if a_name != "All Areas" and "Area" not in row:
+                            row["Area"] = a_name
+                        
+                        new_row_df = pd.DataFrame([row])
+                        final_df = pd.concat([final_df, new_row_df], ignore_index=True)
+
+                # 'deleted_rows' handles rows removed via the UI
+                if "deleted_rows" in ed:
+                    indices_to_drop = [view_df.index[i] for i in ed["deleted_rows"]]
+                    final_df = final_df.drop(indices_to_drop)
+
         conn.update(spreadsheet=MAIN_URL, data=final_df)
         st.success("Cloud Register Updated!"); st.rerun()
 
