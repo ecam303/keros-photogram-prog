@@ -179,7 +179,7 @@ else:
     st.markdown("---")
 
     # 5. SUMMARY TABLE (Below the spreadsheet)
-    st.header("📊 Total Legacy Progress Summary")
+    st.header("Total Legacy Progress Summary")
     # We calculate this from the master ldf so it shows global progress
     summary = ldf.groupby(['Area', 'Trench']).agg(
         Total_Models=('Name', 'count'),
@@ -202,7 +202,7 @@ else:
     st.markdown("---")
 
     # 6. YEARLY CHARTS (At the bottom)
-    st.header("📈 Historical Models per Trench")
+    st.header("Historical Models per Trench")
     l_stats = ldf.copy()
     l_stats['Area_Trench'] = l_stats['Area'].astype(str) + " | " + l_stats['Trench'].astype(str)
     
