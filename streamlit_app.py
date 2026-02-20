@@ -154,7 +154,7 @@ else:
     for idx, yr in enumerate(["2016", "2017", "2018"]):
         with cols[idx]:
             st.write(f"#### {yr}")
-            yr_df = l_stats[l_stats['Date_Text'].str.contains(yr, na=False)]
+            yr_df = l_stats[l_stats['Year'].str.contains(yr, na=False)]
             if not yr_df.empty:
                 chart_data = yr_df.groupby(['Area_Trench', 'Area']).size().reset_index(name='Count')
                 st.bar_chart(chart_data.sort_values('Area'), x="Area_Trench", y="Count", color="Area")
