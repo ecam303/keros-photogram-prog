@@ -104,39 +104,44 @@ else:
     st.title("🏛️ Legacy Archive (2016-2018)")
     ldf = conn.read(spreadsheet=LEGACY_URL, ttl=3600)
     
-    # 1. ROBUST DATE CLEANING
-    # This tries multiple formats to ensure 2016 is captured
-    ldf['Date'] = pd.to_datetime(ldf['Date'], dayfirst=True, errors='coerce')
-    ldf['Year_Num'] = ldf['Date'].dt.year.fillna(0).astype(int)
+    # 1. CLEAN LEGACY DATA (Using the Year column directly)
+    # Ensure 'Year' is treated as a clean integer (removes decimals like 2016.0)
+    if 'Year' in ldf.columns:
+        ldf['Year'] = pd.to_numeric(ldf['Year'], errors='coerce').fillna(0).astype(int)
+    else:
+        st.error("The column 'Year' was not found in the spreadsheet.")
 
-    # 2. GLOBAL FILTERS (Matching your 2025+ style)
+    # Ensure Checkboxes are Bool
+    for col in ["Complete", "GIS uploaded"]:
+        if col in ldf.columns:
+            ldf[col] = ldf[col].fillna(False).astype(bool)
+
+    # 2. GLOBAL FILTERS
     st.header("🔍 Filter Archive")
     c1, c2, c3 = st.columns([1, 1, 2])
     
     with c1:
-        # Filter by Year
-        leg_years = ["All"] + sorted([int(y) for y in ldf['Year_Num'].unique() if y > 0])
+        # Filter by the Year column
+        leg_years = ["All"] + sorted([y for y in ldf['Year'].unique() if y > 0])
         sel_year = st.selectbox("Filter by Year:", leg_years)
     
     with c2:
-        # Filter by Area
-        leg_areas = ["All"] + sorted(ldf['Area'].unique().tolist())
+        leg_areas = ["All"] + sorted(ldf['Area'].astype(str).unique().tolist())
         sel_area = st.selectbox("Filter by Area:", leg_areas)
         
     with c3:
-        # Search Query
         leg_search = st.text_input("🔍 Search Layer Name or Notes", "")
 
-    # Apply the filters to a new dataframe
+    # Apply the filters
     filtered_legacy = ldf.copy()
     if sel_year != "All":
-        filtered_legacy = filtered_legacy[filtered_legacy['Year_Num'] == sel_year]
+        filtered_legacy = filtered_legacy[filtered_legacy['Year'] == sel_year]
     if sel_area != "All":
         filtered_legacy = filtered_legacy[filtered_legacy['Area'] == sel_area]
     if leg_search:
         filtered_legacy = filtered_legacy[
-            filtered_legacy['Name'].str.contains(leg_search, case=False, na=False) | 
-            filtered_legacy['Notes'].str.contains(leg_search, case=False, na=False)
+            filtered_legacy['Name'].astype(str).str.contains(leg_search, case=False, na=False) | 
+            filtered_legacy['Notes'].astype(str).str.contains(leg_search, case=False, na=False)
         ]
 
     # 3. LEGACY SUMMARY TABLE
@@ -153,25 +158,22 @@ else:
         st.dataframe(
             summary.sort_values(['Area', 'Trench']),
             column_config={
-                "% Complete": st.column_config.ProgressColumn("Completion Rate", format="%d%%", min_value=0, max_value=100)
+                "% Complete": st.column_config.ProgressColumn("Completion Rate", format="%.1f%%", min_value=0, max_value=100)
             },
             use_container_width=True,
             hide_index=True
         )
-    else:
-        st.warning("No data matches these filters.")
 
     st.markdown("---")
 
     # 4. LEGACY DATA VIEWER
     st.header("📋 Master Registry")
-    st.dataframe(filtered_legacy.drop(columns=['Year_Num']), use_container_width=True, hide_index=True)
+    st.dataframe(filtered_legacy, use_container_width=True, hide_index=True)
     
     st.markdown("---")
 
     # 5. LEGACY YEARLY CHARTS
     st.header("📈 Models per Trench (By Year)")
-    # We use the full ldf here so charts don't disappear when you filter the table
     l_stats = ldf.copy()
     l_stats['Area_Trench'] = l_stats['Area'].astype(str) + " | " + l_stats['Trench'].astype(str)
     
@@ -179,9 +181,10 @@ else:
     for idx, yr in enumerate([2016, 2017, 2018]):
         with cols[idx]:
             st.write(f"#### {yr}")
-            yr_df = l_stats[l_stats['Year_Num'] == yr]
+            # Explicitly match the year to the 'Year' column
+            yr_df = l_stats[l_stats['Year'] == yr]
             if not yr_df.empty:
                 chart_data = yr_df.groupby(['Area_Trench', 'Area']).size().reset_index(name='Count')
                 st.bar_chart(chart_data.sort_values('Area'), x="Area_Trench", y="Count", color="Area")
             else:
-                st.info(f"No {yr} data found.")
+                st.info(f"No {yr} data found in Year column.")
