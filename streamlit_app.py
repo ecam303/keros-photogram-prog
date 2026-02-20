@@ -5,13 +5,22 @@ import datetime
 
 def check_password():
     """Returns True if the user had the correct password."""
+    # Check if the secret even exists first to avoid the KeyError
+    if "password" not in st.secrets:
+        st.error("🔒 Password not configured in app secrets. Please contact the administrator.")
+        return False
+
     if "password_correct" not in st.session_state:
-        st.text_input("Project Password", type="password", on_change=lambda: st.session_state.update(password_correct=st.session_state.password == st.secrets["password"]), key="password")
+        st.text_input(
+            "Project Password", 
+            type="password", 
+            on_change=lambda: st.session_state.update(
+                password_correct=st.session_state.password == st.secrets["password"]
+            ), 
+            key="password"
+        )
         return False
     return st.session_state["password_correct"]
-
-if not check_password():
-    st.stop()  # Stop the rest of the app from loading
 
 # --- App Configuration ---
 st.set_page_config(page_title="Keros Photogrammetry Register", page_icon="📸", layout="wide")
