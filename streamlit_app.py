@@ -145,18 +145,31 @@ else:
     
     st.markdown("---")
 
-    # 4. LEGACY YEARLY CHARTS
-    st.header("📈 Models per Trench (By Year)")
-    l_stats = ldf.copy()
-    l_stats['Area_Trench'] = l_stats['Area'].astype(str) + " | " + l_stats['Trench'].astype(str)
-    
-    cols = st.columns(3)
-    for idx, yr in enumerate(["2016", "2017", "2018"]):
-        with cols[idx]:
-            st.write(f"#### {yr}")
-            yr_df = l_stats[l_stats['Year'].str.contains(yr, na=False)]
-            if not yr_df.empty:
-                chart_data = yr_df.groupby(['Area_Trench', 'Area']).size().reset_index(name='Count')
-                st.bar_chart(chart_data.sort_values('Area'), x="Area_Trench", y="Count", color="Area")
-            else:
-                st.info(f"No {yr} data found.")
+    # Convert Date to a proper datetime object so we can extract the year
+ldf['Date'] = pd.to_datetime(ldf['Date'], dayfirst=True, errors='coerce')
+# Create a proper numeric Year column
+ldf['Year_Num'] = ldf['Date'].dt.year
+
+# Ensure Checkboxes are Bool
+for col in ["Complete", "GIS uploaded"]:
+    if col in ldf.columns:
+        ldf[col] = ldf[col].fillna(False).astype(bool)
+
+# --- 4. LEGACY YEARLY CHARTS (Updated to use Year_Num) ---
+st.header("📈 Models per Trench (By Year)")
+l_stats = ldf.copy()
+l_stats['Area_Trench'] = l_stats['Area'].astype(str) + " | " + l_stats['Trench'].astype(str)
+
+cols = st.columns(3)
+# We now filter by the number 2016, 2017, etc., instead of searching for text
+for idx, yr in enumerate([2016, 2017, 2018]):
+    with cols[idx]:
+        st.write(f"#### {yr}")
+        # Filter by the new Year_Num column
+        yr_df = l_stats[l_stats['Year_Num'] == yr]
+        
+        if not yr_df.empty:
+            chart_data = yr_df.groupby(['Area_Trench', 'Area']).size().reset_index(name='Count')
+            st.bar_chart(chart_data.sort_values('Area'), x="Area_Trench", y="Count", color="Area")
+        else:
+            st.info(f"No {yr} data found.")
