@@ -9,7 +9,7 @@ page = st.sidebar.radio("Select Era", ["Current 2026", "Legacy 2016-18"])
 if page == "Legacy 2016-18":
     # Run the legacy logic here or keep using switch_page
     st.switch_page("pages/1_Legacy_Data_2016-2018.py")
-    
+
 # --- App Configuration ---
 st.set_page_config(page_title="Keros Photogrammetry Register", page_icon="📸", layout="wide")
 
@@ -18,14 +18,10 @@ st.markdown("---")
 
 # --- Google Sheets Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-URL = st.secrets["connections"]["gsheets"]["spreadsheet"]
-
-# Define the URL directly in the code for the main sheet
 MAIN_URL = "https://docs.google.com/spreadsheets/d/1U1Nxu6X0NvVAWuHchChSSTzD_rAGNHgdtisP3_3OfbQ"
 
 # Pass that URL into the read function
 df = conn.read(spreadsheet=MAIN_URL, ttl=600)
-
 
 # 1. Convert specific columns to Boolean (True/False)
 # This prevents the "FLOAT" compatibility error
