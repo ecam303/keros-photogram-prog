@@ -8,7 +8,7 @@ page = st.sidebar.radio("Select Era", ["Current 2026", "Legacy 2016-18"])
 
 if page == "Legacy 2016-18":
     # Run the legacy logic here or keep using switch_page
-    st.switch_page("pages/1_Legacy_Data_2016-2018.py")
+    st.switch_page("1_Legacy_Data_2016-2018.py")
 
 # --- App Configuration ---
 st.set_page_config(page_title="Keros Photogrammetry Register", page_icon="📸", layout="wide")
@@ -45,7 +45,7 @@ st.title("📸 Keros Photogrammetry Register 2026")
 
 # Navigation Button to Legacy
 if st.button("🏛️ Go to 2016-2018 Archive"):
-    st.switch_page("pages/1_Legacy_Data_2016-2018.py")
+    st.switch_page("1_Legacy_Data_2016-2018.py")
 
 st.markdown("---")
 
