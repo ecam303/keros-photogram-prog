@@ -17,11 +17,13 @@ st.info("This is a read-only archive of historical data. New entries should be m
 
 # --- Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-# REPLACE THIS URL with your 2018 spreadsheet link
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# Define the URL for the legacy sheet
 LEGACY_URL = "https://docs.google.com/spreadsheets/d/1r-4qViz9ojWm_2t9gJ0JqkOmv2gDSmHs7XXTGVvvXbU"
 
-# Load data
-df = conn.read(spreadsheet=LEGACY_URL, ttl=3600) # Higher TTL since this data doesn't change
+# Pass the legacy URL into the read function
+df = conn.read(spreadsheet=LEGACY_URL, ttl=3600)
 
 # --- Data Cleaning ---
 df['Date_Text'] = df['Date'].astype(str)
