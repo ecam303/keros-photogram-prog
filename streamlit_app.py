@@ -37,7 +37,8 @@ if app_mode == "Current 2026 Register":
     st.title("📸 Keros Photogrammetry Register 2026")
     df = conn.read(spreadsheet=MAIN_URL, ttl=600)
 
-    # Clean Data
+    # Clean Data & Initial Sort
+    df = df.sort_values(by=['Area', 'Trench', 'Name'], ascending=True)
     checkbox_cols = ["Complete", "Model Cropped", "GIS uploaded"]
     for col in checkbox_cols:
         if col in df.columns:
@@ -73,12 +74,24 @@ if app_mode == "Current 2026 Register":
             sel_t = st.selectbox(f"Trench in {a_name}", t_list, key=f"t_{a_name}")
             if sel_t != "All": view_df = view_df[view_df['Trench'].astype(str) == sel_t]
             
-            edited = st.data_editor(view_df, key=f"ed_{a_name}", hide_index=True)
+            edited = st.data_editor(
+                view_df, 
+                column_config={
+                    "Trench": st.column_config.TextColumn("Trench", help="Click header to sort"),
+                    "Name": st.column_config.TextColumn("Layer Name", help="Click header to sort"),
+                    "Complete": st.column_config.CheckboxColumn("Processed?"),
+                    "Notes": st.column_config.TextColumn("Notes", width="large")
+                },
+                key=f"ed_{a_name}", 
+                hide_index=True,
+                use_container_width=True
+            )
             all_edits.append(edited)
 
     if st.button("💾 Save All Changes"):
         final_df = df.copy()
-        for ed in all_edits: final_df.update(ed)
+        for ed in all_edits: 
+            if ed is not None: final_df.update(ed)
         conn.update(spreadsheet=MAIN_URL, data=final_df)
         st.success("Updated!"); st.rerun()
 
@@ -102,19 +115,21 @@ if app_mode == "Current 2026 Register":
 # ---------------------------------------------------------
 else:
     st.title("🏛️ Legacy Archive (2016-2018)")
-    # Load data from the Legacy URL
     ldf = conn.read(spreadsheet=LEGACY_URL, ttl=3600)
     
     # 1. CLEAN DATA (Using Year column as source of truth)
     if 'Year' in ldf.columns:
         ldf['Year'] = pd.to_numeric(ldf['Year'], errors='coerce').fillna(0).astype(int)
     
-    # Ensure checkboxes are boolean for the editor
+    # Initial Sort for Legacy Data
+    ldf = ldf.sort_values(by=['Year', 'Area', 'Trench', 'Name'], ascending=True)
+
+    # Ensure checkboxes are boolean
     for col in ["Complete", "GIS uploaded"]:
         if col in ldf.columns:
             ldf[col] = ldf[col].fillna(False).astype(bool)
 
-    # 2. GLOBAL FILTERS (Top of Page)
+    # 2. GLOBAL FILTERS
     st.header("🔍 Filter Archive")
     c1, c2, c3 = st.columns([1, 1, 2])
     
@@ -127,10 +142,9 @@ else:
     with c3:
         leg_search = st.text_input("🔍 Search Layer Name or Notes", "")
 
-    # 3. INTERACTIVE SPREADSHEET (Now at the Top)
+    # 3. INTERACTIVE SPREADSHEET
     st.header("📋 Interactive Legacy Register")
     
-    # Apply Global Filters to the dataframe before showing it in the editor
     f_ldf = ldf.copy()
     if sel_year != "All": f_ldf = f_ldf[f_ldf['Year'] == sel_year]
     if sel_area != "All": f_ldf = f_ldf[f_ldf['Area'] == sel_area]
@@ -138,7 +152,6 @@ else:
         f_ldf = f_ldf[f_ldf['Name'].astype(str).str.contains(leg_search, case=False, na=False) | 
                       f_ldf['Notes'].astype(str).str.contains(leg_search, case=False, na=False)]
 
-    # Tabs for Area-specific editing
     l_areas = ["All Areas"] + sorted(f_ldf['Area'].unique().tolist())
     l_tabs = st.tabs(l_areas)
     legacy_edits = []
@@ -147,10 +160,11 @@ else:
         with l_tabs[i]:
             tab_df = f_ldf if a_name == "All Areas" else f_ldf[f_ldf['Area'] == a_name]
             
-            # The Data Editor
             edited_leg = st.data_editor(
                 tab_df,
                 column_config={
+                    "Trench": st.column_config.TextColumn("Trench", help="Click header to sort"),
+                    "Name": st.column_config.TextColumn("Layer Name", help="Click header to sort"),
                     "Complete": st.column_config.CheckboxColumn("Processed?"),
                     "GIS uploaded": st.column_config.CheckboxColumn("In GIS?"),
                     "Notes": st.column_config.TextColumn("Notes", width="large")
@@ -163,31 +177,24 @@ else:
 
     # 4. SAVE BUTTON
     if st.button("💾 Save Legacy Changes"):
-        # Create a copy to update
         updated_ldf = ldf.copy()
         for ed in legacy_edits:
-            if ed is not None:
-                # This syncs the changes from the editor back to the master list
-                updated_ldf.update(ed)
+            if ed is not None: updated_ldf.update(ed)
         
-        # Write back to Google Sheets
         conn.update(spreadsheet=LEGACY_URL, data=updated_ldf)
         st.balloons()
-        st.success("Legacy Archive successfully updated!")
-        st.rerun()
+        st.success("Legacy Archive updated!"); st.rerun()
 
     st.markdown("---")
 
-    # 5. SUMMARY TABLE (Below the spreadsheet)
+    # 5. SUMMARY TABLE
     st.header("Total Legacy Progress Summary")
-    # We calculate this from the master ldf so it shows global progress
     summary = ldf.groupby(['Area', 'Trench']).agg(
         Total_Models=('Name', 'count'),
         Processed=('Complete', 'sum'),
         In_GIS=('GIS uploaded', 'sum')
     ).reset_index()
     
-    # Calculate % completion
     summary['% Complete'] = (summary['Processed'] / summary['Total_Models'] * 100).round(1)
     
     st.dataframe(
@@ -201,7 +208,7 @@ else:
 
     st.markdown("---")
 
-    # 6. YEARLY CHARTS (At the bottom)
+    # 6. YEARLY CHARTS
     st.header("Historical Models per Trench")
     l_stats = ldf.copy()
     l_stats['Area_Trench'] = l_stats['Area'].astype(str) + " | " + l_stats['Trench'].astype(str)
