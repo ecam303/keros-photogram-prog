@@ -69,7 +69,6 @@ if app_mode == "Current 2026 Register":
     for i, a_name in enumerate(areas):
         with tabs[i]:
             view_df = df if a_name == "All Areas" else df[df['Area'] == a_name]
-            # Trench Filter
             t_list = ["All"] + sorted(view_df['Trench'].astype(str).unique().tolist())
             sel_t = st.selectbox(f"Trench in {a_name}", t_list, key=f"t_{a_name}")
             if sel_t != "All": view_df = view_df[view_df['Trench'].astype(str) == sel_t]
@@ -104,20 +103,60 @@ if app_mode == "Current 2026 Register":
 else:
     st.title("🏛️ Legacy Archive (2016-2018)")
     ldf = conn.read(spreadsheet=LEGACY_URL, ttl=3600)
-    ldf['Date_Text'] = ldf['Date'].astype(str)
     
-    st.subheader("Historical Registry (Read-Only)")
-    st.dataframe(ldf, use_container_width=True, hide_index=True)
+    # 1. CLEAN LEGACY DATA
+    ldf['Date_Text'] = ldf['Date'].astype(str)
+    # Ensure Checkboxes are Bool
+    for col in ["Complete", "GIS uploaded"]:
+        if col in ldf.columns:
+            ldf[col] = ldf[col].fillna(False).astype(bool)
+
+    # 2. LEGACY SUMMARY TABLE (New Feature)
+    st.header("📊 Processing Summary by Trench")
+    
+    # Grouping logic for the summary
+    summary = ldf.groupby(['Area', 'Trench']).agg(
+        Total_Models=('Name', 'count'),
+        Processed=('Complete', 'sum'),
+        In_GIS=('GIS uploaded', 'sum')
+    ).reset_index()
+    
+    # Calculate % completion for the summary
+    summary['% Complete'] = (summary['Processed'] / summary['Total_Models'] * 100).round(1)
+    
+    st.dataframe(
+        summary.sort_values(['Area', 'Trench']),
+        column_config={
+            "% Complete": st.column_config.ProgressColumn("Completion Rate", format="%f%%", min_value=0, max_value=100)
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.markdown("---")
+
+    # 3. LEGACY DATA VIEWER
+    st.header("🔍 Historical Registry")
+    search = st.text_input("Search 2016-18 Models", "")
+    if search:
+        st.dataframe(ldf[ldf['Name'].str.contains(search, case=False, na=False)], use_container_width=True, hide_index=True)
+    else:
+        st.dataframe(ldf, use_container_width=True, hide_index=True)
     
     st.markdown("---")
-    st.header("📊 Legacy Statistics")
+
+    # 4. LEGACY YEARLY CHARTS
+    st.header("📈 Models per Trench (By Year)")
     l_stats = ldf.copy()
     l_stats['Area_Trench'] = l_stats['Area'].astype(str) + " | " + l_stats['Trench'].astype(str)
     
     cols = st.columns(3)
     for idx, yr in enumerate(["2016", "2017", "2018"]):
         with cols[idx]:
-            st.write(f"#### {yr} Models")
+            st.write(f"#### {yr}")
             yr_df = l_stats[l_stats['Date_Text'].str.contains(yr, na=False)]
             if not yr_df.empty:
-                st.bar_chart(yr_df.groupby(['Area_Trench', 'Area']).size().reset_index(name='Count'), x="Area_Trench", y="Count", color="Area")
+                chart_data = yr_df.groupby(['Area_Trench', 'Area']).size().reset_index(name='Count')
+                st.bar_chart(chart_data.sort_values('Area'), x="Area_Trench", y="Count", color="Area")
+            else:
+                st.info(f"No {yr} data found.")
