@@ -6,7 +6,14 @@ import pandas as pd
 st.set_page_config(page_title="Legacy Register (2016-18)", page_icon="🏛️", layout="wide")
 
 st.title("🏛️ Legacy Photogrammetry Register (2016-2018)")
+
+# Navigation Button back to Main
+if st.button("⬅️ Back to Current 2026 Register"):
+    st.switch_page("streamlit_app.py")
+
+st.markdown("---")
 st.info("This is a read-only archive of historical data. New entries should be made on the main page.")
+
 
 # --- Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)

@@ -43,6 +43,13 @@ expected_cols = ["Date", "Trench", "Area", "Name", "Device", "Complete", "Model 
 for col in expected_cols:
     if col not in df.columns:
         df[col] = False if "Complete" in col or "uploaded" in col or "Cropped" in col else ""
+st.title("📸 Keros Photogrammetry Register 2026")
+
+# Navigation Button to Legacy
+if st.button("🏛️ Go to 2016-2018 Archive"):
+    st.switch_page("pages/1_Legacy_Data_2016-2018.py")
+
+st.markdown("---")
 
 # --- SECTION 1: ADD NEW LAYER ---
 st.header("Register New Layer")
