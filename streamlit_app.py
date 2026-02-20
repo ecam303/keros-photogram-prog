@@ -82,7 +82,7 @@ with st.form("entry_form", clear_on_submit=True):
                 "Notes": notes
             }])
             updated_df = pd.concat([df, new_row], ignore_index=True)
-            conn.update(spreadsheet=URL, data=updated_df)
+            conn.update(spreadsheet=MAIN_URL, data=updated_df)
             st.success(f"Added {layer_name} to the register!")
             st.rerun()
         else:
@@ -180,7 +180,7 @@ if st.button("💾 Save All Changes"):
     # Final cleanup: Convert date back to string for GSheets
     final_df['Date'] = pd.to_datetime(final_df['Date']).dt.strftime('%d.%m.%Y')
     
-    conn.update(spreadsheet=URL, data=final_df)
+    conn.update(spreadsheet=MAIN_URL, data=final_df)
     st.balloons()
     st.success("Google Sheet successfully updated!")
     st.rerun()
