@@ -2,6 +2,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import datetime
+import re
 
 # --- 1. APP CONFIGURATION ---
 st.set_page_config(page_title="Keros Photogrammetry", page_icon="📸", layout="wide")
@@ -37,8 +38,11 @@ if app_mode == "Current 2026 Register":
     st.title("📸 Keros Photogrammetry Register 2026")
     df = conn.read(spreadsheet=MAIN_URL, ttl=600)
 
-    # Clean Data & Initial Sort
-    df = df.sort_values(by=['Area', 'Trench', 'Name'], ascending=True)
+    # Clean & Natural Sort
+    df['Trench'] = df['Trench'].astype(str)
+    df['t_sort'] = pd.to_numeric(df['Trench'].str.extract('(\d+)', expand=False), errors='coerce').fillna(0)
+    df = df.sort_values(by=['Area', 't_sort', 'Name']).drop(columns=['t_sort'])
+
     checkbox_cols = ["Complete", "Model Cropped", "GIS uploaded"]
     for col in checkbox_cols:
         if col in df.columns:
@@ -70,21 +74,19 @@ if app_mode == "Current 2026 Register":
     for i, a_name in enumerate(areas):
         with tabs[i]:
             view_df = df if a_name == "All Areas" else df[df['Area'] == a_name]
-            t_list = ["All"] + sorted(view_df['Trench'].astype(str).unique().tolist())
+            t_list = ["All"] + sorted(view_df['Trench'].unique().tolist(), key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0)
             sel_t = st.selectbox(f"Trench in {a_name}", t_list, key=f"t_{a_name}")
-            if sel_t != "All": view_df = view_df[view_df['Trench'].astype(str) == sel_t]
+            if sel_t != "All": view_df = view_df[view_df['Trench'] == sel_t]
             
             edited = st.data_editor(
                 view_df, 
                 column_config={
-                    "Trench": st.column_config.TextColumn("Trench", help="Click header to sort"),
-                    "Name": st.column_config.TextColumn("Layer Name", help="Click header to sort"),
+                    "Trench": st.column_config.TextColumn("Trench"),
                     "Complete": st.column_config.CheckboxColumn("Processed?"),
                     "Notes": st.column_config.TextColumn("Notes", width="large")
                 },
                 key=f"ed_{a_name}", 
-                hide_index=True,
-                use_container_width=True
+                hide_index=True, use_container_width=True, height=600
             )
             all_edits.append(edited)
 
@@ -95,21 +97,6 @@ if app_mode == "Current 2026 Register":
         conn.update(spreadsheet=MAIN_URL, data=final_df)
         st.success("Updated!"); st.rerun()
 
-    # Section 3: Stats
-    st.header("3. Statistics")
-    stats_df = df.copy()
-    stats_df['Area_Trench'] = stats_df['Area'] + " | " + stats_df['Trench'].astype(str)
-    
-    r1c1, r1c2 = st.columns(2)
-    with r1c1:
-        st.write("#### 📅 2025 Trench Counts")
-        d25 = stats_df[stats_df['Date_Text'].str.contains("2025", na=False)]
-        if not d25.empty: st.bar_chart(d25.groupby(['Area_Trench', 'Area']).size().reset_index(name='Count'), x="Area_Trench", y="Count", color="Area")
-    with r1c2:
-        st.write("#### 📅 2026 Trench Counts")
-        d26 = stats_df[stats_df['Date_Text'].str.contains("2026", na=False)]
-        if not d26.empty: st.bar_chart(d26.groupby(['Area_Trench', 'Area']).size().reset_index(name='Count'), x="Area_Trench", y="Count", color="Area")
-
 # ---------------------------------------------------------
 # MODE: LEGACY 2016-18 ARCHIVE
 # ---------------------------------------------------------
@@ -117,14 +104,14 @@ else:
     st.title("🏛️ Legacy Archive (2016-2018)")
     ldf = conn.read(spreadsheet=LEGACY_URL, ttl=3600)
     
-    # 1. CLEAN DATA (Using Year column as source of truth)
+    # 1. CLEAN & NATURAL SORT
     if 'Year' in ldf.columns:
         ldf['Year'] = pd.to_numeric(ldf['Year'], errors='coerce').fillna(0).astype(int)
     
-    # Initial Sort for Legacy Data
-    ldf = ldf.sort_values(by=['Year', 'Area', 'Trench', 'Name'], ascending=True)
+    ldf['Trench'] = ldf['Trench'].astype(str)
+    ldf['t_sort'] = pd.to_numeric(ldf['Trench'].str.extract('(\d+)', expand=False), errors='coerce').fillna(0)
+    ldf = ldf.sort_values(by=['Year', 'Area', 't_sort', 'Name']).drop(columns=['t_sort'])
 
-    # Ensure checkboxes are boolean
     for col in ["Complete", "GIS uploaded"]:
         if col in ldf.columns:
             ldf[col] = ldf[col].fillna(False).astype(bool)
@@ -132,7 +119,6 @@ else:
     # 2. GLOBAL FILTERS
     st.header("🔍 Filter Archive")
     c1, c2, c3 = st.columns([1, 1, 2])
-    
     with c1:
         leg_years = ["All"] + sorted([y for y in ldf['Year'].unique() if y > 0])
         sel_year = st.selectbox("Filter by Year:", leg_years)
@@ -144,13 +130,11 @@ else:
 
     # 3. INTERACTIVE SPREADSHEET
     st.header("📋 Interactive Legacy Register")
-    
     f_ldf = ldf.copy()
     if sel_year != "All": f_ldf = f_ldf[f_ldf['Year'] == sel_year]
     if sel_area != "All": f_ldf = f_ldf[f_ldf['Area'] == sel_area]
     if leg_search:
-        f_ldf = f_ldf[f_ldf['Name'].astype(str).str.contains(leg_search, case=False, na=False) | 
-                      f_ldf['Notes'].astype(str).str.contains(leg_search, case=False, na=False)]
+        f_ldf = f_ldf[f_ldf['Name'].str.contains(leg_search, case=False, na=False)]
 
     l_areas = ["All Areas"] + sorted(f_ldf['Area'].unique().tolist())
     l_tabs = st.tabs(l_areas)
@@ -159,19 +143,14 @@ else:
     for i, a_name in enumerate(l_areas):
         with l_tabs[i]:
             tab_df = f_ldf if a_name == "All Areas" else f_ldf[f_ldf['Area'] == a_name]
-            
             edited_leg = st.data_editor(
                 tab_df,
                 column_config={
-                    "Trench": st.column_config.TextColumn("Trench", help="Click header to sort"),
-                    "Name": st.column_config.TextColumn("Layer Name", help="Click header to sort"),
                     "Complete": st.column_config.CheckboxColumn("Processed?"),
                     "GIS uploaded": st.column_config.CheckboxColumn("In GIS?"),
-                    "Notes": st.column_config.TextColumn("Notes", width="large")
                 },
                 key=f"leg_ed_{a_name}",
-                hide_index=True,
-                use_container_width=True
+                hide_index=True, use_container_width=True, height=600
             )
             legacy_edits.append(edited_leg)
 
@@ -180,46 +159,13 @@ else:
         updated_ldf = ldf.copy()
         for ed in legacy_edits:
             if ed is not None: updated_ldf.update(ed)
-        
         conn.update(spreadsheet=LEGACY_URL, data=updated_ldf)
-        st.balloons()
         st.success("Legacy Archive updated!"); st.rerun()
 
-    st.markdown("---")
-
     # 5. SUMMARY TABLE
-    st.header("Total Legacy Progress Summary")
-    summary = ldf.groupby(['Area', 'Trench']).agg(
-        Total_Models=('Name', 'count'),
-        Processed=('Complete', 'sum'),
-        In_GIS=('GIS uploaded', 'sum')
-    ).reset_index()
-    
+    st.header("📊 Total Legacy Progress Summary")
+    summary = ldf.groupby(['Area', 'Trench']).agg(Total_Models=('Name', 'count'), Processed=('Complete', 'sum'), In_GIS=('GIS uploaded', 'sum')).reset_index()
     summary['% Complete'] = (summary['Processed'] / summary['Total_Models'] * 100).round(1)
-    
-    st.dataframe(
-        summary.sort_values(['Area', 'Trench']), 
-        column_config={
-            "% Complete": st.column_config.ProgressColumn("Completion Rate", format="%.1f%%", min_value=0, max_value=100)
-        },
-        use_container_width=True, 
-        hide_index=True
-    )
-
-    st.markdown("---")
-
-    # 6. YEARLY CHARTS
-    st.header("Historical Models per Trench")
-    l_stats = ldf.copy()
-    l_stats['Area_Trench'] = l_stats['Area'].astype(str) + " | " + l_stats['Trench'].astype(str)
-    
-    cols = st.columns(3)
-    for idx, yr in enumerate([2016, 2017, 2018]):
-        with cols[idx]:
-            st.write(f"#### {yr}")
-            yr_df = l_stats[l_stats['Year'] == yr]
-            if not yr_df.empty:
-                chart_data = yr_df.groupby(['Area_Trench', 'Area']).size().reset_index(name='Count')
-                st.bar_chart(chart_data.sort_values('Area'), x="Area_Trench", y="Count", color="Area")
-            else:
-                st.info(f"No {yr} data found.")
+    st.dataframe(summary.sort_values(['Area', 'Trench']), 
+                 column_config={"% Complete": st.column_config.ProgressColumn("Completion Rate", format="%.1f%%", min_value=0, max_value=100)},
+                 use_container_width=True, hide_index=True)
