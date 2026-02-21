@@ -105,13 +105,50 @@ if app_mode == "📝 New Layer Entry":
 # ---------------------------------------------------------
 elif app_mode == "🔄 Processing Status (2026)":
     st.header("🔄 Current Season Processing Status")
-    df = conn.read(spreadsheet=MAIN_URL, ttl=300)
+    df = conn.read(spreadsheet=MAIN_URL, ttl=600)
+    if st.sidebar.button("♻️ Clear Cache & Force Refresh"):
+        st.cache_data.clear()
+        st.rerun()
     df = natural_sort_df(df)
     
-    for col in ["Complete", "GIS uploaded"]:
+    # 1. FIXED: Force all three columns to be Checkboxes (Booleans)
+    for col in ["Complete", "GIS uploaded", "Model Cropped"]:
         if col in df.columns:
-            df[col] = df[col].fillna(False).astype(bool)
+            # This handles blanks, 0s, 1s, and "TRUE"/"FALSE" strings
+            df[col] = df[col].astype(str).str.upper().map({
+                'TRUE': True, '1': True, '1.0': True, 
+                'FALSE': False, '0': False, '0.0': False, 'NAN': False, '': False
+            }).fillna(False).astype(bool)
+        else:
+            # Create it if it's missing from the Google Sheet
+            df[col] = False
 
+    # --- QUICK ADD BAR ---
+    with st.expander("➕ Quick Add New Layer", expanded=False):
+        c1, c2, c3, c4 = st.columns([1.5, 1, 2, 1])
+        with c1:
+            q_area = st.selectbox("Area", ["Dhaskalio", "Kavos", "Polygon2", "SDS", "Konakia"], key="q_area")
+        with c2:
+            q_trench = st.text_input("Trench", placeholder="e.g. 12", key="q_trench")
+        with c3:
+            q_name = st.text_input("Layer Name", placeholder="e.g. L001", key="q_name")
+        with c4:
+            st.write("##") 
+            if st.button("Add Row", use_container_width=True):
+                if q_trench and q_name:
+                    new_row = pd.DataFrame([{
+                        "Date": datetime.date.today().strftime("%d.%m.%Y"),
+                        "Area": q_area, "Trench": q_trench, "Name": q_name,
+                        "Complete": False, "GIS uploaded": False, "Model Cropped": False, "Notes": ""
+                    }])
+                    updated_df = pd.concat([df, new_row], ignore_index=True)
+                    conn.update(spreadsheet=MAIN_URL, data=updated_df)
+                    st.toast(f"✅ Created {q_name} in Cloud", icon="🚀")
+                    st.rerun()
+                else:
+                    st.error("Missing ID/Name")
+
+    # --- TABS & FILTERS ---
     areas = ["All Areas"] + sorted(df['Area'].unique().tolist())
     tabs = st.tabs(areas)
     all_edits = []
@@ -119,56 +156,83 @@ elif app_mode == "🔄 Processing Status (2026)":
     for i, a_name in enumerate(areas):
         with tabs[i]:
             view_df = df if a_name == "All Areas" else df[df['Area'] == a_name]
-            
             t_list = ["All"] + sorted(view_df['Trench'].unique().tolist(), 
                                       key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 0)
             sel_t = st.selectbox(f"Filter Trench ({a_name})", t_list, key=f"t_sel_{a_name}")
             if sel_t != "All":
                 view_df = view_df[view_df['Trench'] == sel_t]
             
-            # Use dynamic rows to allow adding/deleting directly in the table
+            # 2. FIXED: Added Model Cropped to the column_config
             edited = st.data_editor(
                 view_df, 
                 key=f"ed_{a_name}", 
                 hide_index=True, 
                 use_container_width=True, 
-                height=600,
-                num_rows="dynamic"  # <--- This enables the '+' button at the bottom of the table
+                height=500,
+                num_rows="dynamic",
+                column_config={
+                    "Complete": st.column_config.CheckboxColumn("✅ Done"),
+                    "GIS uploaded": st.column_config.CheckboxColumn("🗺️ GIS"),
+                    "Model Cropped": st.column_config.CheckboxColumn("✂️ Crop")
+                }
             )
-            all_edits.append(edited)
+            all_edits.append((edited, view_df, a_name))
 
-    if st.button("💾 Save Changes"):
-        # We start with the original dataframe
-        final_df = df.copy()
-        
-        # We loop through all the edits made in any tab
-        for ed in all_edits:
-            if ed is not None:
-                # 'edited_rows' handles updates to existing data
-                if "edited_rows" in ed:
-                    for index, updates in ed["edited_rows"].items():
-                        # We apply changes to the correct row in the original dataframe
-                        actual_index = view_df.index[index]
-                        for col, val in updates.items():
-                            final_df.at[actual_index, col] = val
+# --- ENHANCED SAVE LOGIC (Friendlier Version) ---
+st.divider()
+# Removed type="primary" so it's no longer red
+if st.button("💾 SAVE ALL CHANGES", use_container_width=True):
+    with st.status("📡 Communicating with Google Cloud..."):
+        try:
+            final_df = df.copy()
+            has_updates = False
+            
+            for ed, tab_view, tab_name in all_edits:
+                if ed is not None:
+                    # Updates
+                    if ed.get("edited_rows"):
+                        has_updates = True
+                        for idx, updates in ed.get("edited_rows", {}).items():
+                            actual_idx = tab_view.index[int(idx)]
+                            for col, val in updates.items():
+                                final_df.at[actual_idx, col] = val
+                    
+                    # Additions
+                    if ed.get("added_rows"):
+                        has_updates = True
+                        for row in ed["added_rows"]:
+                            if tab_name != "All Areas" and not row.get("Area"):
+                                row["Area"] = tab_name
+                            final_df = pd.concat([final_df, pd.DataFrame([row])], ignore_index=True)
+
+                    # Deletions
+                    if ed.get("deleted_rows"):
+                        has_updates = True
+                        for idx in ed["deleted_rows"]:
+                            actual_idx = tab_view.index[int(idx)]
+                            final_df = final_df.drop(actual_idx)
+
+            if has_updates:
+                final_df = final_df.reset_index(drop=True)
+                conn.update(spreadsheet=MAIN_URL, data=final_df)
                 
-                # 'added_rows' handles the brand new rows from the '+' button
-                if "added_rows" in ed:
-                    for row in ed["added_rows"]:
-                        # If a row was added in a specific tab, we pre-fill the Area
-                        if a_name != "All Areas" and "Area" not in row:
-                            row["Area"] = a_name
-                        
-                        new_row_df = pd.DataFrame([row])
-                        final_df = pd.concat([final_df, new_row_df], ignore_index=True)
-
-                # 'deleted_rows' handles rows removed via the UI
-                if "deleted_rows" in ed:
-                    indices_to_drop = [view_df.index[i] for i in ed["deleted_rows"]]
-                    final_df = final_df.drop(indices_to_drop)
-
-        conn.update(spreadsheet=MAIN_URL, data=final_df)
-        st.success("Cloud Register Updated!"); st.rerun()
+                # 1. Trigger balloons FIRST so they start the animation
+                st.balloons()
+                
+                # 2. Clear success messages
+                st.write("### ✅ Database Sync Complete!")
+                st.success("All changes are now safely written to the Master Registry.")
+                
+                # 3. Give it a slightly longer pause so people can enjoy the balloons
+                import time
+                time.sleep(3)
+                
+                # 4. Rerun to refresh the data
+                st.rerun()
+            else:
+                st.info("No changes found to save.")
+        except Exception as e:
+            st.error(f"❌ DATABASE ERROR: {e}")
 
 # ---------------------------------------------------------
 # MODE: LEGACY 2016-18 ARCHIVE
@@ -178,12 +242,10 @@ elif app_mode == "🏛️ Legacy 2016-18 Archive":
     ldf = conn.read(spreadsheet=LEGACY_URL, ttl=3600)
     ldf = natural_sort_df(ldf)
     
-    # Checkbox cleanup for Legacy
     for col in ["Complete", "GIS uploaded"]:
         if col in ldf.columns:
             ldf[col] = ldf[col].fillna(False).astype(bool)
 
-    # Top-level Global Filters
     st.subheader("🔍 Global Filters")
     c1, c2 = st.columns(2)
     with c1:
@@ -192,12 +254,10 @@ elif app_mode == "🏛️ Legacy 2016-18 Archive":
     with c2:
         leg_search = st.text_input("🔍 Search Layer Name (Across all areas)")
 
-    # Apply Global Filters first
     f_ldf = ldf.copy()
     if sel_year != "All": f_ldf = f_ldf[f_ldf['Year'] == sel_year]
     if leg_search: f_ldf = f_ldf[f_ldf['Name'].str.contains(leg_search, case=False, na=False)]
 
-    # Area Tabs
     l_areas = ["All Areas"] + sorted(f_ldf['Area'].unique().tolist())
     l_tabs = st.tabs(l_areas)
     legacy_edits = []
@@ -205,8 +265,6 @@ elif app_mode == "🏛️ Legacy 2016-18 Archive":
     for i, a_name in enumerate(l_areas):
         with l_tabs[i]:
             tab_df = f_ldf if a_name == "All Areas" else f_ldf[f_ldf['Area'] == a_name]
-            
-            # --- TRENCH SELECTOR (Matches the 2026 logic) ---
             lt_list = ["All"] + sorted(tab_df['Trench'].unique().tolist(),
                                       key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 0)
             sel_lt = st.selectbox(f"Filter Trench in {a_name}", lt_list, key=f"lt_sel_{a_name}")
@@ -215,12 +273,16 @@ elif app_mode == "🏛️ Legacy 2016-18 Archive":
                 tab_df = tab_df[tab_df['Trench'] == sel_lt]
 
             edited_leg = st.data_editor(tab_df, key=f"leg_ed_{a_name}", hide_index=True, use_container_width=True, height=600)
-            legacy_edits.append(edited_leg)
+            legacy_edits.append((edited_leg, tab_df))
 
     if st.button("💾 Save Archive Changes"):
         updated_ldf = ldf.copy()
-        for ed in legacy_edits:
-            if ed is not None: updated_ldf.update(ed)
+        for ed_l, tab_view_l in legacy_edits:
+            if ed_l is not None and "edited_rows" in ed_l:
+                for idx, updates in ed_l["edited_rows"].items():
+                    actual_idx = tab_view_l.index[idx]
+                    for col, val in updates.items():
+                        updated_ldf.at[actual_idx, col] = val
         conn.update(spreadsheet=LEGACY_URL, data=updated_ldf)
         st.success("Legacy Archive Updated!"); st.rerun()
 
@@ -232,7 +294,6 @@ else:
     df_curr = conn.read(spreadsheet=MAIN_URL, ttl=300)
     df_leg = conn.read(spreadsheet=LEGACY_URL, ttl=3600)
 
-    # Helper function for summary logic
     def get_summary(df):
         summary = df.groupby(['Area', 'Trench']).agg(
             Total=('Name', 'count'),
@@ -242,15 +303,11 @@ else:
         summary['% Complete'] = (summary['Processed'] / summary['Total'] * 100).round(1)
         return summary
 
-    # --- 1. CURRENT SEASON METRICS & TABLE ---
     st.subheader("⚡ Current Season Progress (2025-26)")
-    
-    # Text Summary Cards
     m1, m2, m3 = st.columns(3)
     total_curr = len(df_curr)
     done_curr = df_curr['Complete'].sum() if 'Complete' in df_curr.columns else 0
     perc_curr = (done_curr / total_curr * 100).round(1) if total_curr > 0 else 0
-    
     m1.metric("Total Layers Registered", total_curr)
     m2.metric("Total Processed", int(done_curr))
     m3.metric("Overall Completion", f"{perc_curr}%")
@@ -260,16 +317,11 @@ else:
     }, use_container_width=True, hide_index=True)
 
     st.markdown("---")
-
-    # --- 2. LEGACY METRICS & TABLE ---
     st.subheader("🏛️ Legacy Progress (2016-18)")
-    
-    # Text Summary Cards for Legacy
     l1, l2, l3 = st.columns(3)
     total_leg = len(df_leg)
     done_leg = df_leg['Complete'].sum() if 'Complete' in df_leg.columns else 0
     perc_leg = (done_leg / total_leg * 100).round(1) if total_leg > 0 else 0
-    
     l1.metric("Total Archive Layers", total_leg)
     l2.metric("Total Processed", int(done_leg))
     l3.metric("Overall Completion", f"{perc_leg}%")
@@ -278,10 +330,8 @@ else:
         "% Complete": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100)
     }, use_container_width=True, hide_index=True)
 
-    # --- 3. VOLUME CHARTS ---
     st.markdown("---")
     st.subheader("📈 Excavation Volume per Trench")
-    # (Existing chart logic follows...)
     df_curr['Area_Trench'] = df_curr['Area'] + " | " + df_curr['Trench'].astype(str)
     df_leg['Area_Trench'] = df_leg['Area'].astype(str) + " | " + df_leg['Trench'].astype(str)
     
