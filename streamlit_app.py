@@ -175,34 +175,37 @@ elif app_mode == "🔄 Processing Status (2026)":
             )
             tab_changes[f"{a_name}_{sel_t}"] = (edited, display_df)
 
-    # 5. THE GLOBAL SAVE (Aggressive Validation)
+# 5. THE GLOBAL SAVE (Cache-Safe Version)
     if st.button("💾 SAVE ALL EDITS", use_container_width=True):
-        new_df = df.copy()
-        change_detected = False
+        # Trigger an immediate cache clear so the app doesn't "remember" the old state
+        st.cache_data.clear() 
         
-        for key, (edited_data, original_display) in tab_changes.items():
-            # Check for edited rows ONLY
-            if not edited_data.equals(original_display):
-                change_detected = True
-                # Update only the specific rows shown in that specific filtered view
-                for idx_local, row_data in edited_data.iterrows():
-                    # Match by unique combination of Area, Trench, and Name to be 100% safe
-                    mask = (new_df['Area'] == row_data['Area']) & \
-                           (new_df['Trench'] == row_data['Trench']) & \
-                           (new_df['Name'] == row_data['Name'])
+        with st.status("Pushing edits to Cloud...") as status:
+            new_df = df.copy()
+            change_detected = False
+            
+            for key, (edited_data, original_display) in tab_changes.items():
+                # Compare the current state of the editor to what was originally shown
+                if not edited_data.equals(original_display):
+                    change_detected = True
                     
-                    if mask.any():
-                        new_df.loc[mask, ["Complete", "GIS uploaded", "Model Cropped", "Notes"]] = \
-                            [row_data["Complete"], row_data["GIS uploaded"], row_data["Model Cropped"], row_data["Notes"]]
+                    # We use the index of the original_display to ensure we 
+                    # update the EXACT rows in the master dataframe
+                    for idx in edited_data.index:
+                        new_df.loc[idx, ["Complete", "GIS uploaded", "Model Cropped", "Notes"]] = \
+                            edited_data.loc[idx, ["Complete", "GIS uploaded", "Model Cropped", "Notes"]]
 
-        if change_detected:
-            conn.update(spreadsheet=MAIN_URL, data=new_df)
-            st.cache_data.clear()
-            st.success("Successfully synced!")
-            st.balloons()
-            st.rerun()
-        else:
-            st.info("No changes found.")
+            if change_detected:
+                try:
+                    conn.update(spreadsheet=MAIN_URL, data=new_df)
+                    status.update(label="✅ Cloud Sync Successful!", state="complete")
+                    st.balloons()
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+            else:
+                st.info("No changes were detected in the tables.")
 
 # ---------------------------------------------------------
 # MODE: LEGACY 2016-18 ARCHIVE
