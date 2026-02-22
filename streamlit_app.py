@@ -105,33 +105,33 @@ if app_mode == "📝 New Layer Entry":
 # ---------------------------------------------------------
 elif app_mode == "🔄 Processing Status (2026)":
     st.header("🔄 Current Season Processing Status")
-    df = conn.read(spreadsheet=MAIN_URL, ttl=600)
-    if st.sidebar.button("♻️ Clear Cache & Force Refresh"):
-        st.cache_data.clear()
-        st.rerun()
+    
+    # 1. QUOTA-SAFE READ (Cached for 10 mins to prevent 429 errors)
+    try:
+        df = conn.read(spreadsheet=MAIN_URL, ttl=600) 
+    except Exception:
+        st.error("📡 Google Sheets is busy (Rate Limit). Please wait 60 seconds and refresh.")
+        st.stop()
+
     df = natural_sort_df(df)
     
-    # 1. FIXED: Force all three columns to be Checkboxes (Booleans)
+    # Clean boolean columns for checkbox display
     for col in ["Complete", "GIS uploaded", "Model Cropped"]:
         if col in df.columns:
-            # This handles blanks, 0s, 1s, and "TRUE"/"FALSE" strings
             df[col] = df[col].astype(str).str.upper().map({
-                'TRUE': True, '1': True, '1.0': True, 
-                'FALSE': False, '0': False, '0.0': False, 'NAN': False, '': False
+                'TRUE': True, '1': True, 'FALSE': False, '0': False, 'NAN': False, '': False
             }).fillna(False).astype(bool)
-        else:
-            # Create it if it's missing from the Google Sheet
-            df[col] = False
 
-    # --- QUICK ADD BAR ---
-    with st.expander("➕ Quick Add New Layer", expanded=False):
+    # --- 2. ALWAYS-ON QUICK ADD BAR ---
+    with st.container(border=True):
+        st.markdown("##### ➕ Quick Add New Layer")
         c1, c2, c3, c4 = st.columns([1.5, 1, 2, 1])
         with c1:
-            q_area = st.selectbox("Area", ["Dhaskalio", "Kavos", "Polygon2", "SDS", "Konakia"], key="q_area")
+            q_area = st.selectbox("Area", ["Dhaskalio", "Kavos", "Polygon2", "SDS", "Konakia"], key="qa_area")
         with c2:
-            q_trench = st.text_input("Trench", placeholder="e.g. 12", key="q_trench")
+            q_trench = st.text_input("Trench", placeholder="e.g. 12", key="qa_trench")
         with c3:
-            q_name = st.text_input("Layer Name", placeholder="e.g. L001", key="q_name")
+            q_name = st.text_input("Layer Name", placeholder="e.g. L001", key="qa_name")
         with c4:
             st.write("##") 
             if st.button("Add Row", use_container_width=True):
@@ -141,14 +141,18 @@ elif app_mode == "🔄 Processing Status (2026)":
                         "Area": q_area, "Trench": q_trench, "Name": q_name,
                         "Complete": False, "GIS uploaded": False, "Model Cropped": False, "Notes": ""
                     }])
+                    # Pushing new entry immediately to keep index simple
                     updated_df = pd.concat([df, new_row], ignore_index=True)
                     conn.update(spreadsheet=MAIN_URL, data=updated_df)
+                    st.cache_data.clear() 
                     st.toast(f"✅ Created {q_name} in Cloud", icon="🚀")
                     st.rerun()
                 else:
-                    st.error("Missing ID/Name")
+                    st.warning("Enter Trench & Name")
 
-    # --- TABS & FILTERS ---
+    st.write("---")
+
+    # --- 3. TABS & FILTERS ---
     areas = ["All Areas"] + sorted(df['Area'].unique().tolist())
     tabs = st.tabs(areas)
     all_edits = []
@@ -156,16 +160,16 @@ elif app_mode == "🔄 Processing Status (2026)":
     for i, a_name in enumerate(areas):
         with tabs[i]:
             view_df = df if a_name == "All Areas" else df[df['Area'] == a_name]
+            
             t_list = ["All"] + sorted(view_df['Trench'].unique().tolist(), 
                                       key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 0)
-            sel_t = st.selectbox(f"Filter Trench ({a_name})", t_list, key=f"t_sel_{a_name}")
-            if sel_t != "All":
-                view_df = view_df[view_df['Trench'] == sel_t]
             
-            # 2. FIXED: Added Model Cropped to the column_config
+            sel_t = st.selectbox(f"Filter Trench ({a_name})", t_list, key=f"t_sel_{a_name}")
+            display_df = view_df if sel_t == "All" else view_df[view_df['Trench'] == sel_t]
+            
             edited = st.data_editor(
-                view_df, 
-                key=f"ed_{a_name}", 
+                display_df, 
+                key=f"ed_{a_name}_{sel_t}", 
                 hide_index=True, 
                 use_container_width=True, 
                 height=500,
@@ -176,63 +180,62 @@ elif app_mode == "🔄 Processing Status (2026)":
                     "Model Cropped": st.column_config.CheckboxColumn("✂️ Crop")
                 }
             )
-            all_edits.append((edited, view_df, a_name))
+            # Store the editor state and the original view for indexing
+            all_edits.append((edited, display_df, a_name))
 
-# --- ENHANCED SAVE LOGIC (Friendlier Version) ---
-st.divider()
-# Removed type="primary" so it's no longer red
-if st.button("💾 SAVE ALL CHANGES", use_container_width=True):
-    with st.status("📡 Communicating with Google Cloud..."):
-        try:
-            final_df = df.copy()
-            has_updates = False
-            
-            for ed, tab_view, tab_name in all_edits:
-                if ed is not None:
-                    # Updates
-                    if ed.get("edited_rows"):
-                        has_updates = True
-                        for idx, updates in ed.get("edited_rows", {}).items():
-                            actual_idx = tab_view.index[int(idx)]
-                            for col, val in updates.items():
-                                final_df.at[actual_idx, col] = val
+    # --- 4. THE SINGLE GLOBAL SAVE ---
+    st.divider()
+    if st.button("💾 SAVE ALL EDITS TO CLOUD", use_container_width=True):
+        with st.status("📡 Syncing with Master Registry...") as status:
+            try:
+                final_df = df.copy()
+                has_changes = False
+                
+                for ed, tab_view, tab_name in all_edits:
+                    if ed is not None:
+                        # 4a. Process Updates/Edits
+                        if ed.get("edited_rows"):
+                            has_changes = True
+                            for idx_str, updates in ed["edited_rows"].items():
+                                actual_idx = tab_view.index[int(idx_str)]
+                                for col, val in updates.items():
+                                    final_df.at[actual_idx, col] = val
+                        
+                        # 4b. Process In-Table Additions
+                        if ed.get("added_rows"):
+                            has_changes = True
+                            for row in ed["added_rows"]:
+                                # Inherit Area if added inside a specific tab
+                                if tab_name != "All Areas" and not row.get("Area"):
+                                    row["Area"] = tab_name
+                                final_df = pd.concat([final_df, pd.DataFrame([row])], ignore_index=True)
+
+                        # 4c. Process Deletions
+                        if ed.get("deleted_rows"):
+                            has_changes = True
+                            for idx_str in ed["deleted_rows"]:
+                                actual_idx = tab_view.index[int(idx_str)]
+                                final_df = final_df.drop(actual_idx)
+
+                if has_changes:
+                    final_df = final_df.reset_index(drop=True)
+                    # Force Sequential IDs if your sheet uses them
+                    if 'ID' in final_df.columns:
+                        final_df['ID'] = final_df.index + 1
                     
-                    # Additions
-                    if ed.get("added_rows"):
-                        has_updates = True
-                        for row in ed["added_rows"]:
-                            if tab_name != "All Areas" and not row.get("Area"):
-                                row["Area"] = tab_name
-                            final_df = pd.concat([final_df, pd.DataFrame([row])], ignore_index=True)
-
-                    # Deletions
-                    if ed.get("deleted_rows"):
-                        has_updates = True
-                        for idx in ed["deleted_rows"]:
-                            actual_idx = tab_view.index[int(idx)]
-                            final_df = final_df.drop(actual_idx)
-
-            if has_updates:
-                final_df = final_df.reset_index(drop=True)
-                conn.update(spreadsheet=MAIN_URL, data=final_df)
-                
-                # 1. Trigger balloons FIRST so they start the animation
-                st.balloons()
-                
-                # 2. Clear success messages
-                st.write("### ✅ Database Sync Complete!")
-                st.success("All changes are now safely written to the Master Registry.")
-                
-                # 3. Give it a slightly longer pause so people can enjoy the balloons
-                import time
-                time.sleep(3)
-                
-                # 4. Rerun to refresh the data
-                st.rerun()
-            else:
-                st.info("No changes found to save.")
-        except Exception as e:
-            st.error(f"❌ DATABASE ERROR: {e}")
+                    conn.update(spreadsheet=MAIN_URL, data=final_df)
+                    st.cache_data.clear() # Reset cache to show fresh data
+                    
+                    st.balloons()
+                    status.update(label="✅ Cloud Sync Complete!", state="complete", expanded=False)
+                    st.success("Changes saved successfully.")
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.info("No changes detected.")
+                    
+            except Exception as e:
+                st.error(f"❌ Save Error: {e}")
 
 # ---------------------------------------------------------
 # MODE: LEGACY 2016-18 ARCHIVE
