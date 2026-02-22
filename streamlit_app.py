@@ -4,6 +4,7 @@ import pandas as pd
 import datetime
 import re
 import base64
+import time
 
 # --- 1. APP CONFIGURATION ---
 st.set_page_config(page_title="Keros Photogrammetry Hub", page_icon="icon.png", layout="wide")
@@ -106,136 +107,102 @@ if app_mode == "📝 New Layer Entry":
 elif app_mode == "🔄 Processing Status (2026)":
     st.header("🔄 Current Season Processing Status")
     
-    # 1. QUOTA-SAFE READ (Cached for 10 mins to prevent 429 errors)
-    try:
-        df = conn.read(spreadsheet=MAIN_URL, ttl=600) 
-    except Exception:
-        st.error("📡 Google Sheets is busy (Rate Limit). Please wait 60 seconds and refresh.")
-        st.stop()
-
-    df = natural_sort_df(df)
+    # 1. READ (Cached)
+    df = conn.read(spreadsheet=MAIN_URL, ttl=600)
     
-    # Clean boolean columns for checkbox display
+    # 2. DATA TYPE FIX (Strictly for the checkboxes)
     for col in ["Complete", "GIS uploaded", "Model Cropped"]:
         if col in df.columns:
-            df[col] = df[col].astype(str).str.upper().map({
-                'TRUE': True, '1': True, 'FALSE': False, '0': False, 'NAN': False, '': False
-            }).fillna(False).astype(bool)
+            df[col] = df[col].astype(str).str.upper().str.strip().isin(['1', '1.0', 'TRUE'])
+    
+    df = natural_sort_df(df)
 
-    # --- 2. ALWAYS-ON QUICK ADD BAR ---
+    # 3. QUICK ADD (Immediate Sync - Use this for new rows!)
     with st.container(border=True):
-        st.markdown("##### ➕ Quick Add New Layer")
+        st.write("➕ **Quick Add New Layer** (Saves Immediately)")
         c1, c2, c3, c4 = st.columns([1.5, 1, 2, 1])
         with c1:
-            q_area = st.selectbox("Area", ["Dhaskalio", "Kavos", "Polygon2", "SDS", "Konakia"], key="qa_area")
+            q_area = st.selectbox("Area", ["Dhaskalio", "Kavos", "Polygon2", "SDS", "Konakia"], key="q_a")
         with c2:
-            q_trench = st.text_input("Trench", placeholder="e.g. 12", key="qa_trench")
+            q_trench = st.text_input("Trench", key="q_t")
         with c3:
-            q_name = st.text_input("Layer Name", placeholder="e.g. L001", key="qa_name")
+            q_name = st.text_input("Layer Name", key="q_n")
         with c4:
-            st.write("##") 
-            if st.button("Add Row", use_container_width=True):
+            st.write("##")
+            if st.button("Add to Cloud", use_container_width=True):
                 if q_trench and q_name:
                     new_row = pd.DataFrame([{
                         "Date": datetime.date.today().strftime("%d.%m.%Y"),
                         "Area": q_area, "Trench": q_trench, "Name": q_name,
                         "Complete": False, "GIS uploaded": False, "Model Cropped": False, "Notes": ""
                     }])
-                    # Pushing new entry immediately to keep index simple
-                    updated_df = pd.concat([df, new_row], ignore_index=True)
-                    conn.update(spreadsheet=MAIN_URL, data=updated_df)
-                    st.cache_data.clear() 
-                    st.toast(f"✅ Created {q_name} in Cloud", icon="🚀")
+                    # PUSH IMMEDIATELY
+                    conn.update(spreadsheet=MAIN_URL, data=pd.concat([df, new_row], ignore_index=True))
+                    st.cache_data.clear()
                     st.rerun()
-                else:
-                    st.warning("Enter Trench & Name")
 
     st.write("---")
 
-    # --- 3. TABS & FILTERS ---
-    areas = ["All Areas"] + sorted(df['Area'].unique().tolist())
-    tabs = st.tabs(areas)
-    all_edits = []
+    # 4. TABS & EDITOR (Logic Protected)
+    # Note: We REMOVED "All Areas" from the editor to prevent data deletion errors
+    area_list = sorted(df['Area'].unique().tolist())
+    tabs = st.tabs(area_list)
     
-    for i, a_name in enumerate(areas):
+    # We use a dictionary to track changes per tab
+    tab_changes = {}
+    
+    for i, a_name in enumerate(area_list):
         with tabs[i]:
-            view_df = df if a_name == "All Areas" else df[df['Area'] == a_name]
+            view_df = df[df['Area'] == a_name].copy()
             
             t_list = ["All"] + sorted(view_df['Trench'].unique().tolist(), 
                                       key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 0)
+            sel_t = st.selectbox(f"Filter Trench", t_list, key=f"t_{a_name}")
             
-            sel_t = st.selectbox(f"Filter Trench ({a_name})", t_list, key=f"t_sel_{a_name}")
             display_df = view_df if sel_t == "All" else view_df[view_df['Trench'] == sel_t]
             
             edited = st.data_editor(
                 display_df, 
                 key=f"ed_{a_name}_{sel_t}", 
                 hide_index=True, 
-                use_container_width=True, 
-                height=500,
-                num_rows="dynamic",
+                use_container_width=True,
+                num_rows="fixed", # Disable the (+) button inside the table to prevent index errors
                 column_config={
-                    "Complete": st.column_config.CheckboxColumn("✅ Done"),
-                    "GIS uploaded": st.column_config.CheckboxColumn("🗺️ GIS"),
-                    "Model Cropped": st.column_config.CheckboxColumn("✂️ Crop")
+                    "Complete": st.column_config.CheckboxColumn(),
+                    "GIS uploaded": st.column_config.CheckboxColumn(),
+                    "Model Cropped": st.column_config.CheckboxColumn()
                 }
             )
-            # Store the editor state and the original view for indexing
-            all_edits.append((edited, display_df, a_name))
+            tab_changes[f"{a_name}_{sel_t}"] = (edited, display_df)
 
-    # --- 4. THE SINGLE GLOBAL SAVE ---
-    st.divider()
-    if st.button("💾 SAVE ALL EDITS TO CLOUD", use_container_width=True):
-        with st.status("📡 Syncing with Master Registry...") as status:
-            try:
-                final_df = df.copy()
-                has_changes = False
-                
-                for ed, tab_view, tab_name in all_edits:
-                    if ed is not None:
-                        # 4a. Process Updates/Edits
-                        if ed.get("edited_rows"):
-                            has_changes = True
-                            for idx_str, updates in ed["edited_rows"].items():
-                                actual_idx = tab_view.index[int(idx_str)]
-                                for col, val in updates.items():
-                                    final_df.at[actual_idx, col] = val
-                        
-                        # 4b. Process In-Table Additions
-                        if ed.get("added_rows"):
-                            has_changes = True
-                            for row in ed["added_rows"]:
-                                # Inherit Area if added inside a specific tab
-                                if tab_name != "All Areas" and not row.get("Area"):
-                                    row["Area"] = tab_name
-                                final_df = pd.concat([final_df, pd.DataFrame([row])], ignore_index=True)
+    # 5. THE GLOBAL SAVE (Aggressive Validation)
+    if st.button("💾 SAVE ALL EDITS", use_container_width=True):
+        new_df = df.copy()
+        change_detected = False
+        
+        for key, (edited_data, original_display) in tab_changes.items():
+            # Check for edited rows ONLY
+            if not edited_data.equals(original_display):
+                change_detected = True
+                # Update only the specific rows shown in that specific filtered view
+                for idx_local, row_data in edited_data.iterrows():
+                    # Match by unique combination of Area, Trench, and Name to be 100% safe
+                    mask = (new_df['Area'] == row_data['Area']) & \
+                           (new_df['Trench'] == row_data['Trench']) & \
+                           (new_df['Name'] == row_data['Name'])
+                    
+                    if mask.any():
+                        new_df.loc[mask, ["Complete", "GIS uploaded", "Model Cropped", "Notes"]] = \
+                            [row_data["Complete"], row_data["GIS uploaded"], row_data["Model Cropped"], row_data["Notes"]]
 
-                        # 4c. Process Deletions
-                        if ed.get("deleted_rows"):
-                            has_changes = True
-                            for idx_str in ed["deleted_rows"]:
-                                actual_idx = tab_view.index[int(idx_str)]
-                                final_df = final_df.drop(actual_idx)
-
-                if has_changes:
-                    final_df = final_df.reset_index(drop=True)
-                    # Force Sequential IDs if your sheet uses them
-                    if 'ID' in final_df.columns:
-                        final_df['ID'] = final_df.index + 1
-                    
-                    conn.update(spreadsheet=MAIN_URL, data=final_df)
-                    st.cache_data.clear() # Reset cache to show fresh data
-                    
-                    st.balloons()
-                    status.update(label="✅ Cloud Sync Complete!", state="complete", expanded=False)
-                    st.success("Changes saved successfully.")
-                    time.sleep(2)
-                    st.rerun()
-                else:
-                    st.info("No changes detected.")
-                    
-            except Exception as e:
-                st.error(f"❌ Save Error: {e}")
+        if change_detected:
+            conn.update(spreadsheet=MAIN_URL, data=new_df)
+            st.cache_data.clear()
+            st.success("Successfully synced!")
+            st.balloons()
+            st.rerun()
+        else:
+            st.info("No changes found.")
 
 # ---------------------------------------------------------
 # MODE: LEGACY 2016-18 ARCHIVE
